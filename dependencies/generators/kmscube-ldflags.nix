@@ -28,7 +28,11 @@ let
       [ ];
   kmscubeArchive =
     if forceLoad && kmscube != null then
-      [ "-force_load" "${strip kmscube}/lib/libkmscube.a" ]
+      [
+        "-L${strip kmscube}/lib"
+        "-Wl,-u,_kmscube_main"
+        "-lkmscube"
+      ]
     else
       [ ];
   angleFlags =
@@ -52,4 +56,4 @@ let
     "-liconv"
   ];
 in
-libPaths ++ ilandArchive ++ kmscubeArchive ++ angleFlags ++ cxxFlags ++ platformSupportLibs
+libPaths ++ ilandArchive ++ angleFlags ++ cxxFlags ++ platformSupportLibs ++ kmscubeArchive
