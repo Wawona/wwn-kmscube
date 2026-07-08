@@ -46,6 +46,12 @@
           macos = kmscubeDir + "/macos.nix";
           linux = kmscubeDir + "/linux.nix";
         };
+        vkcube = withPlatformVariants {
+          android = ./dependencies/clients/vkcube/android.nix;
+        };
+        "opengl-cube" = withPlatformVariants {
+          android = ./dependencies/clients/opengl-cube/android.nix;
+        };
         # Backward-compatible alias for flakes that still key nativeDeps on this name.
         "iland-gl-clients" = withPlatformVariants {
           android = kmscubeDir + "/android.nix";
