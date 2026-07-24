@@ -30,7 +30,8 @@ pkgs.stdenv.mkDerivation {
     AR="${androidToolchain.androidAR}"
 
     INCLUDES="-I${iland}/include -I${iland}/include/EGL -I${iland}/include/GLES2 -I${angle}/include"
-    CFLAGS="-fPIC -O2 -std=c11 $INCLUDES -Wno-int-conversion -Wno-int-to-void-pointer-cast"
+    CFLAGS="-fPIC -O2 -std=c11 $INCLUDES -Wno-int-conversion -Wno-int-to-void-pointer-cast \
+      -include ${iland}/include/iland_drm_open_compat.h"
 
     echo "CC libkmscube.a (in-process kmscube_main)"
     "$CC" -c $CFLAGS -Dmain=kmscube_main kmscube.c -o kmscube_main.o
