@@ -58,9 +58,12 @@ pkgs.stdenv.mkDerivation {
 
     FRAMEWORKS="-framework IOSurface -framework Foundation -framework CoreFoundation \
       -framework CoreGraphics -framework Accelerate -framework QuartzCore -framework Metal"
-    # wl_egl_window_* comes from libiland_userland, never from libwayland-egl
-    # (that one is an abort-on-call vendor stub).
-    LIBS="-L${iland}/lib -liland_userland -L${angle}/lib -lEGL -lGLESv2 \
+    # wl_egl_window_* and EGL_PLATFORM_WAYLAND come from libiland_wayland_egl,
+    # never from libwayland-egl (that one is an abort-on-call vendor stub). It
+    # is a separate archive from libiland_userland so KMS-only clients are not
+    # forced to link Wayland; order matters, it depends on the core.
+    LIBS="-L${iland}/lib -liland_wayland_egl -liland_userland \
+      -L${angle}/lib -lEGL -lGLESv2 \
       -L${libwayland}/lib -lwayland-client"
 
     # Output name differs from the source dir (./opengl-cube) so ld does not try
