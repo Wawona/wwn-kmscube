@@ -1,7 +1,8 @@
-# Standalone opengl-cube binary + in-process libopengl_cube.a for macOS
-# (iland + ANGLE). Renders c2d7fa/opengl-cube — a different demo from kmscube —
-# ported onto the same iland virtual DRM/GBM/EGL host. Needs GLES3 (VAOs,
-# GLSL ES 300) where kmscube only needs GLES2.
+# Standalone opengl-cube binary + in-process libopengl_cube.a for macOS.
+# Renders c2d7fa/opengl-cube as a real Wayland client on Wawona's compositor:
+# xdg-shell + wl_egl_window + EGL/GLES3 via iland's Wayland-EGL winsys (which
+# posts the IOSurface ANGLE renders into as a linux-dmabuf wl_buffer). This is
+# NOT the iland KMS path — that one is kmscube.
 {
   lib,
   pkgs,
@@ -13,6 +14,8 @@
 let
   iland = buildModule.buildForMacOS "iland" { };
   angle = buildModule.buildForMacOS "angle" { };
+  libwayland = buildModule.buildForMacOS "libwayland" { };
+  waylandProtocols = pkgs.wayland-protocols;
 in
 pkgs.stdenv.mkDerivation {
   pname = "opengl-cube-macos";
@@ -22,6 +25,8 @@ pkgs.stdenv.mkDerivation {
 
   __noChroot = true;
   dontConfigure = true;
+
+  nativeBuildInputs = [ pkgs.wayland-scanner ];
 
   buildPhase = ''
     runHook preBuild
@@ -42,25 +47,34 @@ pkgs.stdenv.mkDerivation {
 
     CLANG="${pkgs.clang}/bin/clang"
 
+    # xdg-shell client bindings: this client owns its own toplevel.
+    XDG_XML="${waylandProtocols}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml"
+    wayland-scanner client-header "$XDG_XML" xdg-shell-client-protocol.h
+    wayland-scanner private-code  "$XDG_XML" xdg-shell-protocol.c
+
     INCLUDES="-I. -I${iland}/include -I${iland}/include/EGL -I${iland}/include/GLES2 \
-      -I${iland}/include/GLES3 -I${angle}/include"
-    CFLAGS="-isysroot $SDKROOT -mmacosx-version-min=12.0 -O2 -std=c11 $INCLUDES \
-      -Wno-int-conversion -Wno-int-to-void-pointer-cast -include kmscube_compat.h"
+      -I${iland}/include/GLES3 -I${angle}/include -I${libwayland}/include"
+    CFLAGS="-isysroot $SDKROOT -mmacosx-version-min=12.0 -O2 -std=c11 $INCLUDES"
 
     FRAMEWORKS="-framework IOSurface -framework Foundation -framework CoreFoundation \
       -framework CoreGraphics -framework Accelerate -framework QuartzCore -framework Metal"
-    LIBS="-L${iland}/lib -liland_userland -L${angle}/lib -lEGL -lGLESv2"
+    # wl_egl_window_* comes from libiland_userland, never from libwayland-egl
+    # (that one is an abort-on-call vendor stub).
+    LIBS="-L${iland}/lib -liland_userland -L${angle}/lib -lEGL -lGLESv2 \
+      -L${libwayland}/lib -lwayland-client"
 
     # Output name differs from the source dir (./opengl-cube) so ld does not try
     # to overwrite a directory; installed as bin/opengl-cube below.
     echo "CC opengl-cube (standalone binary)"
-    "$CLANG" $CFLAGS opengl-cube/opengl_cube.c $LIBS $FRAMEWORKS \
-      -Wl,-rpath,${angle}/lib -o opengl_cube_bin
+    "$CLANG" $CFLAGS opengl-cube/opengl_cube.c xdg-shell-protocol.c \
+      $LIBS $FRAMEWORKS \
+      -Wl,-rpath,${angle}/lib -Wl,-rpath,${libwayland}/lib -o opengl_cube_bin
 
     echo "CC libopengl_cube.a (in-process opengl_cube_main)"
     "$CLANG" -c $CFLAGS -Dmain=opengl_cube_main opengl-cube/opengl_cube.c \
       -o opengl_cube_main.o
-    ar rcs libopengl_cube.a opengl_cube_main.o
+    "$CLANG" -c $CFLAGS xdg-shell-protocol.c -o xdg-shell-protocol.o
+    ar rcs libopengl_cube.a opengl_cube_main.o xdg-shell-protocol.o
 
     runHook postBuild
   '';
@@ -77,10 +91,11 @@ int opengl_cube_main(int argc, char *argv[]);
 EOF
     echo "${angle}" > $out/nix-support/angle-path
     echo "${iland}" > $out/nix-support/iland-path
+    echo "${libwayland}" > $out/nix-support/libwayland-path
   '';
 
   meta = with lib; {
-    description = "OpenGL cube GL smoke test over iland + ANGLE for macOS";
+    description = "OpenGL cube Wayland-EGL client for macOS (ANGLE via iland winsys)";
     homepage = "https://github.com/Wawona/wwn-kmscube";
     license = licenses.mit;
     platforms = platforms.darwin;

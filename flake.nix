@@ -113,7 +113,10 @@
           ipados = ./dependencies/clients/vkcube/ipados.nix;
           visionos = ./dependencies/clients/vkcube/visionos.nix;
           macos = ./dependencies/clients/vkcube/macos.nix;
-          # Product policy: tvOS/watchOS never bundle Vulkan.
+          # Not policy — see the gate legend in `wawona-platform-targets`:
+          # tvOS is ⏳ planned (SDK has Metal; MoltenVK supports tvOS 14.5+, so
+          # this becomes a real recipe in the final graphics phase behind
+          # WWN_TVOS_GPU), watchOS is ⛔ blocked (no Metal.framework at all).
           tvos = null;
           watchos = null;
           linux = null;
@@ -125,9 +128,10 @@
           ipados = ./dependencies/clients/opengl-cube/ipados.nix;
           visionos = ./dependencies/clients/opengl-cube/visionos.nix;
           macos = ./dependencies/clients/opengl-cube/macos.nix;
-          # Product policy: tvOS/watchOS never bundle ANGLE. Unlike kmscube (whose
-          # tvos.nix re-exports ios.nix and is kept out by allowGpu alone), this
-          # client refuses at the registry so a deps mistake cannot link it.
+          # Refused at the registry (not just by allowGpu, as kmscube's
+          # tvos.nix re-export is) so a deps mistake cannot link a GL stack in.
+          # tvOS is ⏳ planned, watchOS is ⛔ blocked — see the gate legend in
+          # `wawona-platform-targets`; neither is a permanent product decision.
           tvos = null;
           watchos = null;
           linux = null;

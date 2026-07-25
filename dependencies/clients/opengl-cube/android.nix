@@ -1,5 +1,10 @@
-# opengl-cube for Android — c2d7fa/opengl-cube (CC0) ported onto iland userland
-# KMS. A distinct demo from kmscube; needs GLES3 rather than GLES2.
+# opengl-cube for Android — c2d7fa/opengl-cube (CC0). A distinct demo from
+# kmscube; needs GLES3 rather than GLES2.
+#
+# INTERIM: builds the KMS-hosted variant (opengl_cube_kms.c), not the Wayland
+# client the Apple targets use. Android still needs an AHardwareBuffer winsys in
+# wwn-iland plus AHB import in the compositor's linux-dmabuf handler; until then
+# this keeps the client from regressing. See the header of opengl_cube_kms.c.
 {
   lib,
   pkgs,
@@ -26,7 +31,7 @@ pkgs.stdenv.mkDerivation {
     INCLUDES="-I. -I${iland}/include -I${iland}/include/EGL -I${iland}/include/GLES2 \
       -I${iland}/include/GLES3"
     CFLAGS="-fPIC -O2 -std=c11 $INCLUDES -include iland_drm_open_compat.h"
-    "$CC" -c $CFLAGS -Dmain=opengl_cube_main opengl-cube/opengl_cube.c \
+    "$CC" -c $CFLAGS -Dmain=opengl_cube_main opengl-cube/opengl_cube_kms.c \
       -o opengl_cube_main.o
     "$AR" rcs libopengl_cube.a opengl_cube_main.o
     runHook postBuild

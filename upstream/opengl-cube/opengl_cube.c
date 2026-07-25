@@ -1,302 +1,220 @@
 /*
- * OpenGL Cube — c2d7fa/opengl-cube ported off GLFW/GLEW onto iland's virtual
- * DRM/GBM/EGL stack, so it runs as an in-process Wawona client on Apple and
- * Android exactly like kmscube does.
+ * OpenGL Cube — c2d7fa/opengl-cube ported off GLFW/GLEW onto Wayland + EGL, so
+ * it runs as a real client of Wawona's compositor (wl_surface + xdg-shell +
+ * wl_egl_window), not on iland's virtual KMS.
+ *
+ * This is the distinction between the three cube clients:
+ *   kmscube      — iland's userspace DRM/KMS/GBM, direct scanout emulation.
+ *   opengl-cube  — this file: OpenGL ES over Wayland-EGL on the compositor.
+ *   vkcube       — Vulkan over Wayland on the compositor.
+ *
+ * The Wayland-EGL winsys itself lives in wwn-iland (shims/egl/src/egl_wayland.c
+ * + shims/wayland-egl): eglSwapBuffers posts the IOSurface ANGLE rendered into
+ * as a linux-dmabuf wl_buffer, so this client is zero-copy to the compositor.
  *
  * Renderer (geometry, colours, shaders, animation, matrix.h) comes from
  * https://github.com/c2d7fa/opengl-cube @ daba3b8, CC0-1.0 (see ./LICENSE).
- * This is a genuinely different demo from kmscube: flat vertex-interpolated
+ * It is a genuinely different demo from kmscube: flat vertex-interpolated
  * colours on a dark blue ground, versus kmscube's diffuse-lit cube.
  *
- * The KMS/GBM/EGL host sequence below follows embtom/kmscube (Arvin Schnell,
- * Rob Clark, Anand Balagopalakrishnan; MIT) — see ../kmscube.c. It is
- * duplicated rather than shared because kmscube is the proven acceptance
- * client and must not be refactored underneath it; a later extraction into a
- * common host is tracked in docs/issues/opengl-vulkan-cube-port.md.
- *
  * Port notes, all forced by the target rather than preference:
- *  - GLFW window/context/swap  -> gbm_surface + eglCreateWindowSurface + page flip.
+ *  - GLFW window/context/swap  -> xdg_toplevel + wl_egl_window + eglSwapBuffers.
  *  - GLEW                      -> ANGLE GLES3 headers.
  *  - GLSL 450                  -> GLSL ES 300 (adds a precision qualifier).
  *  - Shaders read from vertex.glsl / fragment.glsl at runtime -> embedded, since
  *    there is no cwd beside the binary once this is linked into an app bundle.
  *  - glfwGetTime               -> CLOCK_MONOTONIC.
- *  - Upstream's projection assumes the 800x800 window it created. A KMS mode is
- *    not square, so aspect is corrected with a scale matrix in front of the
- *    projection; matrix.h itself is kept verbatim.
+ *  - Upstream's projection assumes the 800x800 window it created; the toplevel
+ *    can be any size, so aspect is corrected with a scale matrix in front of the
+ *    projection. matrix.h itself is kept verbatim.
  */
 
-#include <errno.h>
-#include <fcntl.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
-#include <drm_fourcc.h>
-#include <gbm.h>
-#include <xf86drm.h>
-#include <xf86drmMode.h>
+#include <wayland-client.h>
+#include <wayland-egl-core.h>
+
+#include "xdg-shell-client-protocol.h"
 
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 
 #include "matrix.h"
 
+/* Provided by wwn-iland's EGL shim. Declared rather than pulled from a vendor
+ * EGL header so the client does not depend on which extension headers ANGLE
+ * happens to install. */
+extern EGLDisplay eglGetPlatformDisplayEXT(EGLenum platform,
+                                           void *native_display,
+                                           const EGLint *attrib_list);
+#ifndef EGL_PLATFORM_WAYLAND_KHR
+#define EGL_PLATFORM_WAYLAND_KHR 0x31D8
+#endif
+
+#define DEFAULT_WIDTH  800
+#define DEFAULT_HEIGHT 800
+
+static struct {
+	struct wl_display *display;
+	struct wl_registry *registry;
+	struct wl_compositor *compositor;
+	struct xdg_wm_base *wm_base;
+	struct wl_surface *surface;
+	struct xdg_surface *xdg_surface;
+	struct xdg_toplevel *toplevel;
+	struct wl_egl_window *egl_window;
+	bool configured;
+	bool running;
+} wl;
+
 static struct {
 	EGLDisplay display;
 	EGLConfig config;
 	EGLContext context;
 	EGLSurface surface;
+
 	GLuint program;
 	GLuint vao;
 	GLint uniform_transform;
-	int width, height;
-} gl;
 
-static struct {
-	struct gbm_device *dev;
-	struct gbm_surface *surface;
-} gbm;
-
-static struct {
-	int fd;
-	uint32_t crtc_id;
-	uint32_t connector_id;
-	uint32_t format;
-	drmModeRes *resources;
-	drmModeEncoder *encoder;
-	drmModeConnector *connector;
-	drmModeModeInfo *mode;
-} drm;
-
-struct drm_fb {
-	struct gbm_bo *bo;
-	uint32_t fb_id;
+	int width;
+	int height;
+} gl = {
+	.width = DEFAULT_WIDTH,
+	.height = DEFAULT_HEIGHT,
 };
 
-static const char *device = "/dev/dri/card0";
-
 /* ------------------------------------------------------------------ *
- * DRM / GBM / EGL host (see ../kmscube.c)
+ * Wayland host
  * ------------------------------------------------------------------ */
 
-static uint32_t drm_fmt_to_gbm_fmt(uint32_t fmt)
+static void wm_base_ping(void *data, struct xdg_wm_base *wm_base,
+			 uint32_t serial)
 {
-	switch (fmt) {
-	case DRM_FORMAT_XRGB8888:
-		return GBM_FORMAT_XRGB8888;
-	case DRM_FORMAT_ARGB8888:
-		return GBM_FORMAT_ARGB8888;
-	case DRM_FORMAT_RGB565:
-		return GBM_FORMAT_RGB565;
-	default:
-		printf("opengl-cube: unsupported DRM format 0x%x, assuming XRGB8888\n", fmt);
-		return GBM_FORMAT_XRGB8888;
+	(void)data;
+	xdg_wm_base_pong(wm_base, serial);
+}
+
+static const struct xdg_wm_base_listener wm_base_listener = {
+	wm_base_ping,
+};
+
+static void registry_global(void *data, struct wl_registry *registry,
+			    uint32_t name, const char *interface,
+			    uint32_t version)
+{
+	(void)data;
+
+	if (strcmp(interface, "wl_compositor") == 0) {
+		/* v4 for wl_surface.damage_buffer, which the winsys prefers. */
+		uint32_t want = version < 4 ? version : 4;
+		wl.compositor = wl_registry_bind(registry, name,
+						 &wl_compositor_interface, want);
+	} else if (strcmp(interface, "xdg_wm_base") == 0) {
+		wl.wm_base = wl_registry_bind(registry, name,
+					      &xdg_wm_base_interface, 1);
+		xdg_wm_base_add_listener(wl.wm_base, &wm_base_listener, NULL);
 	}
 }
 
-static bool plane_has_format(uint32_t desired, int count, uint32_t *formats)
+static void registry_global_remove(void *data, struct wl_registry *registry,
+				   uint32_t name)
 {
-	for (int i = 0; i < count; i++)
-		if (desired == formats[i])
-			return true;
-	return false;
+	(void)data;
+	(void)registry;
+	(void)name;
 }
 
-static int get_drm_prop_val(int fd, drmModeObjectPropertiesPtr props,
-			    const char *name, unsigned int *p_val)
+static const struct wl_registry_listener registry_listener = {
+	registry_global,
+	registry_global_remove,
+};
+
+static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface,
+				  uint32_t serial)
 {
-	drmModePropertyPtr p = NULL;
-	unsigned int i, prop_id = 0; /* Property ID is always > 0 */
+	(void)data;
+	xdg_surface_ack_configure(xdg_surface, serial);
+	wl.configured = true;
+}
 
-	for (i = 0; !prop_id && i < props->count_props; i++) {
-		p = drmModeGetProperty(fd, props->props[i]);
-		if (!p)
-			continue;
-		if (!strcmp(p->name, name)) {
-			prop_id = p->prop_id;
-			break;
-		}
-		drmModeFreeProperty(p);
-		p = NULL;
-	}
+static const struct xdg_surface_listener xdg_surface_listener = {
+	xdg_surface_configure,
+};
 
-	if (!prop_id) {
-		printf("opengl-cube: could not find %s property\n", name);
+static void toplevel_configure(void *data, struct xdg_toplevel *toplevel,
+			       int32_t width, int32_t height,
+			       struct wl_array *states)
+{
+	(void)data;
+	(void)toplevel;
+	(void)states;
+
+	/* 0x0 means "pick your own size" — keep what we have. */
+	if (width <= 0 || height <= 0)
+		return;
+	if (width == gl.width && height == gl.height)
+		return;
+
+	gl.width = width;
+	gl.height = height;
+	if (wl.egl_window)
+		wl_egl_window_resize(wl.egl_window, width, height, 0, 0);
+}
+
+static void toplevel_close(void *data, struct xdg_toplevel *toplevel)
+{
+	(void)data;
+	(void)toplevel;
+	wl.running = false;
+}
+
+static const struct xdg_toplevel_listener toplevel_listener = {
+	toplevel_configure,
+	toplevel_close,
+};
+
+static int init_wayland(void)
+{
+	wl.display = wl_display_connect(NULL);
+	if (!wl.display) {
+		printf("opengl-cube: wl_display_connect failed (WAYLAND_DISPLAY set?)\n");
 		return -1;
 	}
 
-	drmModeFreeProperty(p);
-	*p_val = props->prop_values[i];
-	return 0;
-}
+	wl.registry = wl_display_get_registry(wl.display);
+	wl_registry_add_listener(wl.registry, &registry_listener, NULL);
+	wl_display_roundtrip(wl.display);
 
-/* Pick a scanout format the primary plane actually advertises, in preference
- * order. iland's virtual plane decides what the IOSurface / AHardwareBuffer
- * ends up being, so this must be asked rather than assumed. */
-static bool set_drm_format(void)
-{
-	static const uint32_t drm_formats[] = { DRM_FORMAT_XRGB8888,
-						DRM_FORMAT_ARGB8888,
-						DRM_FORMAT_RGB565 };
-	bool found = false;
-
-	drmSetClientCap(drm.fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
-
-	drmModePlaneRes *plane_res = drmModeGetPlaneResources(drm.fd);
-	if (!plane_res) {
-		printf("opengl-cube: drmModeGetPlaneResources failed: %s\n", strerror(errno));
-		drmSetClientCap(drm.fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 0);
-		return false;
-	}
-
-	for (uint32_t i = 0; i < plane_res->count_planes && !found; i++) {
-		drmModePlane *plane = drmModeGetPlane(drm.fd, plane_res->planes[i]);
-		if (!plane)
-			continue;
-
-		drmModeObjectProperties *props = drmModeObjectGetProperties(
-			drm.fd, plane->plane_id, DRM_MODE_OBJECT_PLANE);
-		unsigned int plane_type = 0;
-		if (props &&
-		    get_drm_prop_val(drm.fd, props, "type", &plane_type) == 0 &&
-		    plane_type == DRM_PLANE_TYPE_PRIMARY) {
-			for (size_t k = 0; k < sizeof(drm_formats) / sizeof(drm_formats[0]); k++) {
-				if (plane_has_format(drm_formats[k], plane->count_formats,
-						     plane->formats)) {
-					drm.format = drm_formats[k];
-					found = true;
-					break;
-				}
-			}
-		}
-
-		if (props)
-			drmModeFreeObjectProperties(props);
-		drmModeFreePlane(plane);
-	}
-
-	drmModeFreePlaneResources(plane_res);
-	drmSetClientCap(drm.fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 0);
-	return found;
-}
-
-static int init_drm(void)
-{
-	drm.fd = open(device, O_RDWR | O_CLOEXEC);
-	if (drm.fd < 0) {
-		printf("opengl-cube: could not open drm device %s\n", device);
+	if (!wl.compositor || !wl.wm_base) {
+		printf("opengl-cube: compositor lacks wl_compositor/xdg_wm_base\n");
 		return -1;
 	}
 
-	drm.resources = drmModeGetResources(drm.fd);
-	if (!drm.resources) {
-		printf("opengl-cube: drmModeGetResources failed: %s\n", strerror(errno));
-		return -1;
-	}
+	wl.surface = wl_compositor_create_surface(wl.compositor);
+	wl.xdg_surface = xdg_wm_base_get_xdg_surface(wl.wm_base, wl.surface);
+	xdg_surface_add_listener(wl.xdg_surface, &xdg_surface_listener, NULL);
 
-	for (int i = 0; i < drm.resources->count_connectors; i++) {
-		drmModeConnector *connector =
-			drmModeGetConnector(drm.fd, drm.resources->connectors[i]);
-		if (!connector)
-			continue;
-		if (connector->connection != DRM_MODE_CONNECTED ||
-		    connector->count_modes < 1) {
-			drmModeFreeConnector(connector);
-			continue;
-		}
+	wl.toplevel = xdg_surface_get_toplevel(wl.xdg_surface);
+	xdg_toplevel_add_listener(wl.toplevel, &toplevel_listener, NULL);
+	xdg_toplevel_set_title(wl.toplevel, "OpenGL Cube");
+	xdg_toplevel_set_app_id(wl.toplevel, "org.wawona.opengl-cube");
 
-		drmModeEncoder *encoder = NULL;
-		for (int j = 0; j < connector->count_encoders; j++) {
-			encoder = drmModeGetEncoder(drm.fd, connector->encoders[j]);
-			if (!encoder)
-				continue;
-			if (!connector->encoder_id)
-				connector->encoder_id = encoder->encoder_id;
-			if (encoder->encoder_id == connector->encoder_id) {
-				if (!encoder->crtc_id) {
-					for (int k = 0; k < drm.resources->count_crtcs; k++) {
-						if (!(encoder->possible_crtcs & (1 << k)))
-							continue;
-						encoder->crtc_id = drm.resources->crtcs[k];
-						break;
-					}
-				}
-				if (encoder->crtc_id)
-					break;
-			}
-			drmModeFreeEncoder(encoder);
-			encoder = NULL;
-		}
-
-		if (!encoder) {
-			printf("opengl-cube: connector %d has no usable encoder\n",
-			       connector->connector_id);
-			drmModeFreeConnector(connector);
-			continue;
-		}
-
-		/* Prefer the mode the CRTC is already programmed with, else the
-		 * connector's first (preferred) mode. */
-		drmModeCrtc *crtc = drmModeGetCrtc(drm.fd, encoder->crtc_id);
-		drm.mode = &connector->modes[0];
-		if (crtc && crtc->mode_valid) {
-			for (int j = 0; j < connector->count_modes; j++) {
-				if (connector->modes[j].hdisplay == crtc->width &&
-				    connector->modes[j].vdisplay == crtc->height) {
-					drm.mode = &connector->modes[j];
-					break;
-				}
-			}
-		}
-		if (crtc)
-			drmModeFreeCrtc(crtc);
-
-		drm.connector = connector;
-		drm.connector_id = connector->connector_id;
-		drm.encoder = encoder;
-		drm.crtc_id = encoder->crtc_id;
-
-		if (!set_drm_format()) {
-			printf("opengl-cube: no desired pixel format found!\n");
+	/* Roleless commit, then wait for the first configure before attaching. */
+	wl_surface_commit(wl.surface);
+	while (!wl.configured) {
+		if (wl_display_dispatch(wl.display) < 0) {
+			printf("opengl-cube: disconnected before first configure\n");
 			return -1;
 		}
-
-		printf("opengl-cube: CRTC %d, connector %d, format 0x%x, mode %s %dx%d@%d\n",
-		       drm.crtc_id, drm.connector_id, drm.format, drm.mode->name,
-		       drm.mode->hdisplay, drm.mode->vdisplay, drm.mode->vrefresh);
-		return 0;
 	}
 
-	printf("opengl-cube: no connected connector found\n");
-	return -1;
-}
-
-static int init_gbm(void)
-{
-	gbm.dev = gbm_create_device(drm.fd);
-	if (!gbm.dev) {
-		printf("opengl-cube: failed to create gbm device\n");
-		return -1;
-	}
-
-	gbm.surface = gbm_surface_create(gbm.dev, drm.mode->hdisplay, drm.mode->vdisplay,
-					 drm_fmt_to_gbm_fmt(drm.format),
-					 GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
-	if (!gbm.surface) {
-		printf("opengl-cube: failed to create gbm surface\n");
-		return -1;
-	}
-
-	printf("opengl-cube: init gbm success (%dx%d)\n", drm.mode->hdisplay,
-	       drm.mode->vdisplay);
 	return 0;
 }
 
@@ -370,14 +288,16 @@ static int init_egl(void)
 
 	EGLint major, minor, n;
 
-	gl.display = eglGetDisplay(gbm.dev);
+	gl.display = eglGetPlatformDisplayEXT(EGL_PLATFORM_WAYLAND_KHR,
+					      wl.display, NULL);
 	if (gl.display == EGL_NO_DISPLAY) {
-		printf("opengl-cube: eglGetDisplay failed\n");
+		printf("opengl-cube: no EGL Wayland platform display\n");
 		return -1;
 	}
 
 	if (!eglInitialize(gl.display, &major, &minor)) {
-		printf("opengl-cube: eglInitialize failed\n");
+		printf("opengl-cube: eglInitialize failed "
+		       "(compositor without linux-dmabuf?)\n");
 		return -1;
 	}
 
@@ -394,16 +314,24 @@ static int init_egl(void)
 		return -1;
 	}
 
-	gl.context = eglCreateContext(gl.display, gl.config, EGL_NO_CONTEXT, context_attribs);
+	gl.context = eglCreateContext(gl.display, gl.config, EGL_NO_CONTEXT,
+				      context_attribs);
 	if (gl.context == EGL_NO_CONTEXT) {
 		printf("opengl-cube: failed to create ES3 context\n");
 		return -1;
 	}
 
+	wl.egl_window = wl_egl_window_create(wl.surface, gl.width, gl.height);
+	if (!wl.egl_window) {
+		printf("opengl-cube: wl_egl_window_create failed\n");
+		return -1;
+	}
+
 	gl.surface = eglCreateWindowSurface(gl.display, gl.config,
-					    (EGLNativeWindowType)gbm.surface, NULL);
+					    (EGLNativeWindowType)wl.egl_window,
+					    NULL);
 	if (gl.surface == EGL_NO_SURFACE) {
-		printf("opengl-cube: failed to create egl surface\n");
+		printf("opengl-cube: eglCreateWindowSurface failed\n");
 		return -1;
 	}
 
@@ -412,7 +340,7 @@ static int init_egl(void)
 		return -1;
 	}
 
-	printf("opengl-cube: GL_RENDERER \"%s\"\n", (const char *)glGetString(GL_RENDERER));
+	printf("opengl-cube: GL_RENDERER \"%s\"\n", glGetString(GL_RENDERER));
 	return 0;
 }
 
@@ -570,8 +498,8 @@ static void render(void)
 
 	glUseProgram(gl.program);
 
-	/* Squeeze the wider axis so the cube stays square in a non-square mode.
-	 * Applied before the projection so it acts in clip space. */
+	/* Squeeze the wider axis so the cube stays square in a non-square
+	 * toplevel. Applied before the projection so it acts in clip space. */
 	float sx = 1.0f, sy = 1.0f;
 	if (gl.width >= gl.height)
 		sx = (float)gl.height / (float)gl.width;
@@ -591,174 +519,77 @@ static void render(void)
 }
 
 /* ------------------------------------------------------------------ *
- * Present loop
+ * Frame loop
  * ------------------------------------------------------------------ */
 
-static void drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
-{
-	struct drm_fb *fb = data;
-	(void)bo;
+static void frame_done(void *data, struct wl_callback *callback, uint32_t time);
 
-	if (fb->fb_id)
-		drmModeRmFB(drm.fd, fb->fb_id);
-	free(fb);
+static const struct wl_callback_listener frame_listener = {
+	frame_done,
+};
+
+static void draw_frame(void)
+{
+	render();
+
+	/* Request the next frame before the commit that eglSwapBuffers issues,
+	 * so the callback is part of the same surface state. */
+	struct wl_callback *callback = wl_surface_frame(wl.surface);
+	wl_callback_add_listener(callback, &frame_listener, NULL);
+
+	eglSwapBuffers(gl.display, gl.surface);
 }
 
-static struct drm_fb *drm_fb_get_from_bo(struct gbm_bo *bo)
+static void frame_done(void *data, struct wl_callback *callback, uint32_t time)
 {
-	struct drm_fb *fb = gbm_bo_get_user_data(bo);
-	uint32_t bo_handles[4] = { 0 }, offsets[4] = { 0 }, pitches[4] = { 0 };
-
-	if (fb)
-		return fb;
-
-	fb = calloc(1, sizeof *fb);
-	fb->bo = bo;
-
-	uint32_t width = gbm_bo_get_width(bo);
-	uint32_t height = gbm_bo_get_height(bo);
-	pitches[0] = gbm_bo_get_stride(bo);
-	bo_handles[0] = gbm_bo_get_handle(bo).u32;
-	uint32_t format = gbm_bo_get_format(bo);
-
-	if (drmModeAddFB2(drm.fd, width, height, format, bo_handles, pitches, offsets,
-			  &fb->fb_id, 0)) {
-		printf("opengl-cube: failed to create fb: %s\n", strerror(errno));
-		free(fb);
-		return NULL;
-	}
-
-	gbm_bo_set_user_data(bo, fb, drm_fb_destroy_callback);
-	return fb;
-}
-
-static void page_flip_handler(int fd, unsigned int frame, unsigned int sec,
-			      unsigned int usec, void *data)
-{
-	int *waiting_for_flip = data;
-	(void)fd;
-	(void)frame;
-	(void)sec;
-	(void)usec;
-
-	*waiting_for_flip = *waiting_for_flip - 1;
-}
-
-static void print_usage(void)
-{
-	printf("Usage : opengl-cube <options>\n");
-	printf("\t-h : Help\n");
-	printf("\t-d /dev/dri/cardX : DRM device to be used [default /dev/dri/card0]\n");
-	printf("\t-n <number> : Number of frames to render\n");
+	(void)data;
+	(void)time;
+	wl_callback_destroy(callback);
+	draw_frame();
 }
 
 int main(int argc, char *argv[])
 {
-	fd_set fds;
-	drmEventContext evctx = {
-		.version = DRM_EVENT_CONTEXT_VERSION,
-		.page_flip_handler = page_flip_handler,
-	};
-	struct gbm_bo *bo;
-	struct drm_fb *fb;
-	int frame_count = -1;
-	int opt;
+	(void)argc;
+	(void)argv;
 
-	while ((opt = getopt(argc, argv, "hd:n:")) != -1) {
-		switch (opt) {
-		case 'h':
-			print_usage();
-			return 0;
-		case 'd':
-			device = optarg;
-			break;
-		case 'n':
-			frame_count = atoi(optarg);
-			break;
-		default:
-			print_usage();
-			return -1;
-		}
-	}
+	wl.running = true;
 
-	if (init_drm()) {
-		printf("opengl-cube: failed to initialize DRM\n");
+	if (init_wayland() < 0)
 		return -1;
-	}
-
-	FD_ZERO(&fds);
-	FD_SET(drm.fd, &fds);
-
-	if (init_gbm()) {
-		printf("opengl-cube: failed to initialize GBM\n");
+	if (init_egl() < 0)
 		return -1;
-	}
-
-	gl.width = drm.mode->hdisplay;
-	gl.height = drm.mode->vdisplay;
-
-	if (init_egl()) {
-		printf("opengl-cube: failed to initialize EGL\n");
-		return -1;
-	}
-
-	if (init_cube()) {
-		printf("opengl-cube: failed to initialize cube\n");
-		return -1;
-	}
-
-	/* First frame establishes the CRTC before flips can be queued. */
-	render();
-	eglSwapBuffers(gl.display, gl.surface);
-	bo = gbm_surface_lock_front_buffer(gbm.surface);
-	fb = drm_fb_get_from_bo(bo);
-	if (!fb)
+	if (init_cube() < 0)
 		return -1;
 
-	if (drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0, &drm.connector_id, 1,
-			   drm.mode)) {
-		printf("opengl-cube: failed to set mode: %s\n", strerror(errno));
-		return -1;
+	printf("opengl-cube: running as a Wayland client at %dx%d\n",
+	       gl.width, gl.height);
+	fflush(stdout);
+
+	draw_frame();
+
+	while (wl.running && wl_display_dispatch(wl.display) != -1)
+		;
+
+	if (gl.display != EGL_NO_DISPLAY) {
+		eglMakeCurrent(gl.display, EGL_NO_SURFACE, EGL_NO_SURFACE,
+			       EGL_NO_CONTEXT);
+		if (gl.surface != EGL_NO_SURFACE)
+			eglDestroySurface(gl.display, gl.surface);
+		if (gl.context != EGL_NO_CONTEXT)
+			eglDestroyContext(gl.display, gl.context);
+		eglTerminate(gl.display);
 	}
+	if (wl.egl_window)
+		wl_egl_window_destroy(wl.egl_window);
+	if (wl.toplevel)
+		xdg_toplevel_destroy(wl.toplevel);
+	if (wl.xdg_surface)
+		xdg_surface_destroy(wl.xdg_surface);
+	if (wl.surface)
+		wl_surface_destroy(wl.surface);
+	if (wl.display)
+		wl_display_disconnect(wl.display);
 
-	while (frame_count != 0) {
-		int waiting_for_flip = 1;
-
-		render();
-
-		eglSwapBuffers(gl.display, gl.surface);
-		struct gbm_bo *next_bo = gbm_surface_lock_front_buffer(gbm.surface);
-		fb = drm_fb_get_from_bo(next_bo);
-		if (!fb)
-			return -1;
-
-		if (drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id,
-				    DRM_MODE_PAGE_FLIP_EVENT, &waiting_for_flip)) {
-			printf("opengl-cube: failed to queue page flip: %s\n", strerror(errno));
-			return -1;
-		}
-
-		while (waiting_for_flip) {
-			int ret = select(drm.fd + 1, &fds, NULL, NULL, NULL);
-			if (ret < 0) {
-				printf("opengl-cube: select err: %s\n", strerror(errno));
-				return ret;
-			} else if (ret == 0) {
-				printf("opengl-cube: select timeout!\n");
-				return -1;
-			} else if (FD_ISSET(0, &fds)) {
-				continue;
-			}
-			drmHandleEvent(drm.fd, &evctx);
-		}
-
-		gbm_surface_release_buffer(gbm.surface, bo);
-		bo = next_bo;
-
-		if (frame_count >= 0)
-			frame_count--;
-	}
-
-	printf("opengl-cube: exiting\n");
 	return 0;
 }
