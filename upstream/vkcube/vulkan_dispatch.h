@@ -95,18 +95,21 @@ WWN_VK_INSTANCE_FUNCTIONS(WWN_DECLARE_VK)
 WWN_VK_DEVICE_FUNCTIONS(WWN_DECLARE_VK)
 #undef WWN_DECLARE_VK
 
-static const char *wwn_vkcube_provider_path(void) {
 #if defined(__ANDROID__)
-  /* Bundled SwiftShader when Settings selected it, else the system loader. */
-  const char *client_icd = getenv("WWN_SWIFTSHADER_LIBRARY");
-  return client_icd && client_icd[0] ? client_icd : "libvulkan.so";
+/* Bundled SwiftShader when Settings selected it, else the system loader. */
+#define WWN_VKCUBE_PROVIDER_ENV "WWN_SWIFTSHADER_LIBRARY"
+#define WWN_VKCUBE_PROVIDER_FALLBACK "libvulkan.so"
 #else
-  /* Set by WWNSettings_ApplyGraphicsDriverSelection to the bundled ICD dylib
-   * for the selected driver. There is no Vulkan loader in the bundle, so this
-   * is the ICD itself rather than a manifest. */
-  const char *icd = getenv("WWN_VULKAN_LIBRARY");
-  return icd && icd[0] ? icd : "libMoltenVK.dylib";
+/* Set by WWNSettings_ApplyGraphicsDriverSelection to the bundled ICD dylib for
+ * the selected driver. There is no Vulkan loader in the bundle, so this is the
+ * ICD itself rather than a manifest. */
+#define WWN_VKCUBE_PROVIDER_ENV "WWN_VULKAN_LIBRARY"
+#define WWN_VKCUBE_PROVIDER_FALLBACK "libMoltenVK.dylib"
 #endif
+
+static const char *wwn_vkcube_provider_path(void) {
+  const char *icd = getenv(WWN_VKCUBE_PROVIDER_ENV);
+  return icd && icd[0] ? icd : WWN_VKCUBE_PROVIDER_FALLBACK;
 }
 
 static int wwn_vkcube_load_global_dispatch(void) {
@@ -128,6 +131,13 @@ static int wwn_vkcube_load_global_dispatch(void) {
     fprintf(stderr, "vkcube: %s has no vkGetInstanceProcAddr\n", path);
     return -1;
   }
+  /* Name the provider on success too. Driver selection is otherwise invisible:
+   * a MoltenVK run and a KosmicKrisp run produce byte-identical output, so
+   * acceptance cannot tell whether the Settings choice was honored or whether
+   * the fallback silently served every run. */
+  const char *selected = getenv(WWN_VKCUBE_PROVIDER_ENV);
+  fprintf(stderr, "vkcube: Vulkan provider %s (%s)\n", path,
+          (selected && selected[0]) ? "selected" : "default fallback");
 #define WWN_LOAD_GLOBAL(name) \
   wwn_##name = (PFN_##name)wwn_vkGetInstanceProcAddr(VK_NULL_HANDLE, #name); \
   if (!wwn_##name) { \
