@@ -120,6 +120,17 @@
         };
         "opengl-cube" = withPlatformVariants {
           android = ./dependencies/clients/opengl-cube/android.nix;
+          wearos = ./dependencies/clients/opengl-cube/wearos.nix;
+          ios = ./dependencies/clients/opengl-cube/ios.nix;
+          ipados = ./dependencies/clients/opengl-cube/ipados.nix;
+          visionos = ./dependencies/clients/opengl-cube/visionos.nix;
+          macos = ./dependencies/clients/opengl-cube/macos.nix;
+          # Product policy: tvOS/watchOS never bundle ANGLE. Unlike kmscube (whose
+          # tvos.nix re-exports ios.nix and is kept out by allowGpu alone), this
+          # client refuses at the registry so a deps mistake cannot link it.
+          tvos = null;
+          watchos = null;
+          linux = null;
         };
         # Backward-compatible alias for flakes that still key nativeDeps on this name.
         "iland-gl-clients" = withPlatformVariants {
@@ -162,12 +173,18 @@
               vkcube-visionos = tc.buildForVisionOS "vkcube" { };
               vkcube-visionos-sim = tc.buildForVisionOS "vkcube" { simulator = true; };
               vkcube-macos = tc.buildForMacOS "vkcube" { };
+              opengl-cube-ios = tc.buildForIOS "opengl-cube" { };
+              opengl-cube-ios-sim = tc.buildForIOS "opengl-cube" { simulator = true; };
+              opengl-cube-ipados = tc.buildForIPadOS "opengl-cube" { };
+              opengl-cube-visionos = tc.buildForVisionOS "opengl-cube" { };
+              opengl-cube-macos = tc.buildForMacOS "opengl-cube" { };
             }
           else
             { }
         )
         // {
           vkcube-android = tc.buildForAndroid "vkcube" { };
+          opengl-cube-android = tc.buildForAndroid "opengl-cube" { };
         }
       );
 
