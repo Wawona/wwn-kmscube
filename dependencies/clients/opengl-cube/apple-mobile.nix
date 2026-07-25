@@ -1,9 +1,8 @@
 # opengl-cube over wwn-iland (GBM/EGL/DRM) + ANGLE — Apple mobile in-process archive.
 #
-# Same mesa/kmscube sources as the KMS Cube client, compiled with a distinct
-# entry point so Machines can offer the two as separate ids. Deliberately NOT a
-# second GLES cube implementation: see docs/issues/opengl-vulkan-cube-port.md,
-# which locks this client to these sources rather than a GLFW demo port.
+# Renders c2d7fa/opengl-cube (CC0), ported off GLFW/GLEW onto the same iland
+# virtual DRM host kmscube uses. A distinct demo from kmscube, not a rename of
+# it. Needs GLES3 (VAOs, GLSL ES 300) where kmscube only needs GLES2.
 {
   lib,
   pkgs,
@@ -44,15 +43,16 @@ pkgs.stdenv.mkDerivation {
     CLANG="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
     AR="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/ar"
 
-    INCLUDES="-I${iland}/include -I${iland}/include/EGL -I${iland}/include/GLES2 -I${angle}/include"
+    INCLUDES="-I. -I${iland}/include -I${iland}/include/EGL -I${iland}/include/GLES2 \
+      -I${iland}/include/GLES3 -I${angle}/include"
     CFLAGS="-arch arm64 -isysroot $SDKROOT ${minVerFlag} -O2 -std=c11 \
       $INCLUDES -Wno-int-conversion -Wno-int-to-void-pointer-cast \
       -include kmscube_compat.h"
 
     echo "CC libopengl_cube.a (in-process opengl_cube_main)"
-    "$CLANG" -c $CFLAGS -Dmain=opengl_cube_main kmscube.c -o opengl_cube_main.o
-    "$CLANG" -c $CFLAGS esUtil.c -o esUtil.o
-    "$AR" rcs libopengl_cube.a opengl_cube_main.o esUtil.o
+    "$CLANG" -c $CFLAGS -Dmain=opengl_cube_main opengl-cube/opengl_cube.c \
+      -o opengl_cube_main.o
+    "$AR" rcs libopengl_cube.a opengl_cube_main.o
 
     runHook postBuild
   '';

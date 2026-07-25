@@ -1,6 +1,7 @@
 # Standalone opengl-cube binary + in-process libopengl_cube.a for macOS
-# (iland + ANGLE). Same mesa/kmscube sources as the KMS Cube client under a
-# distinct entry point; see docs/issues/opengl-vulkan-cube-port.md.
+# (iland + ANGLE). Renders c2d7fa/opengl-cube — a different demo from kmscube —
+# ported onto the same iland virtual DRM/GBM/EGL host. Needs GLES3 (VAOs,
+# GLSL ES 300) where kmscube only needs GLES2.
 {
   lib,
   pkgs,
@@ -41,7 +42,8 @@ pkgs.stdenv.mkDerivation {
 
     CLANG="${pkgs.clang}/bin/clang"
 
-    INCLUDES="-I${iland}/include -I${iland}/include/EGL -I${iland}/include/GLES2 -I${angle}/include"
+    INCLUDES="-I. -I${iland}/include -I${iland}/include/EGL -I${iland}/include/GLES2 \
+      -I${iland}/include/GLES3 -I${angle}/include"
     CFLAGS="-isysroot $SDKROOT -mmacosx-version-min=12.0 -O2 -std=c11 $INCLUDES \
       -Wno-int-conversion -Wno-int-to-void-pointer-cast -include kmscube_compat.h"
 
@@ -49,21 +51,23 @@ pkgs.stdenv.mkDerivation {
       -framework CoreGraphics -framework Accelerate -framework QuartzCore -framework Metal"
     LIBS="-L${iland}/lib -liland_userland -L${angle}/lib -lEGL -lGLESv2"
 
+    # Output name differs from the source dir (./opengl-cube) so ld does not try
+    # to overwrite a directory; installed as bin/opengl-cube below.
     echo "CC opengl-cube (standalone binary)"
-    "$CLANG" $CFLAGS kmscube.c esUtil.c $LIBS $FRAMEWORKS \
-      -Wl,-rpath,${angle}/lib -o opengl-cube
+    "$CLANG" $CFLAGS opengl-cube/opengl_cube.c $LIBS $FRAMEWORKS \
+      -Wl,-rpath,${angle}/lib -o opengl_cube_bin
 
     echo "CC libopengl_cube.a (in-process opengl_cube_main)"
-    "$CLANG" -c $CFLAGS -Dmain=opengl_cube_main kmscube.c -o opengl_cube_main.o
-    "$CLANG" -c $CFLAGS esUtil.c -o esUtil.o
-    ar rcs libopengl_cube.a opengl_cube_main.o esUtil.o
+    "$CLANG" -c $CFLAGS -Dmain=opengl_cube_main opengl-cube/opengl_cube.c \
+      -o opengl_cube_main.o
+    ar rcs libopengl_cube.a opengl_cube_main.o
 
     runHook postBuild
   '';
 
   installPhase = ''
     mkdir -p $out/bin $out/lib $out/include $out/nix-support
-    cp opengl-cube $out/bin/
+    cp opengl_cube_bin $out/bin/opengl-cube
     cp libopengl_cube.a $out/lib/
     cat > $out/include/opengl_cube.h <<'EOF'
 #ifndef WAWONA_OPENGL_CUBE_H

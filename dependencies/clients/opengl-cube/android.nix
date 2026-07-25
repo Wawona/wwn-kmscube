@@ -1,4 +1,5 @@
-# opengl-cube for Android — GLES cube via iland userland KMS (same sources as kmscube).
+# opengl-cube for Android — c2d7fa/opengl-cube (CC0) ported onto iland userland
+# KMS. A distinct demo from kmscube; needs GLES3 rather than GLES2.
 {
   lib,
   pkgs,
@@ -11,7 +12,6 @@
 }:
 
 let
-  kmscubeAndroid = buildModule.buildForAndroid "kmscube" { };
   iland = buildModule.buildForAndroid "iland" { };
 in
 pkgs.stdenv.mkDerivation {
@@ -23,11 +23,12 @@ pkgs.stdenv.mkDerivation {
     runHook preBuild
     CC="${androidToolchain.androidCC}"
     AR="${androidToolchain.androidAR}"
-    INCLUDES="-I${iland}/include -I${iland}/include/EGL -I${iland}/include/GLES2"
-    CFLAGS="-fPIC -O2 -std=c11 $INCLUDES"
-    "$CC" -c $CFLAGS -Dmain=opengl_cube_main kmscube.c -o opengl_cube_main.o
-    "$CC" -c $CFLAGS esUtil.c -o esUtil.o
-    "$AR" rcs libopengl_cube.a opengl_cube_main.o esUtil.o
+    INCLUDES="-I. -I${iland}/include -I${iland}/include/EGL -I${iland}/include/GLES2 \
+      -I${iland}/include/GLES3"
+    CFLAGS="-fPIC -O2 -std=c11 $INCLUDES -include iland_drm_open_compat.h"
+    "$CC" -c $CFLAGS -Dmain=opengl_cube_main opengl-cube/opengl_cube.c \
+      -o opengl_cube_main.o
+    "$AR" rcs libopengl_cube.a opengl_cube_main.o
     runHook postBuild
   '';
   installPhase = ''
