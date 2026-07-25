@@ -1,5 +1,5 @@
 {
-  description = "wwn-kmscube: Wawona's kmscube port (GBM/EGL/DRM GL smoke test over wwn-iland + ANGLE) for macOS, Apple mobile, and Android.";
+  description = "wwn-kmscube: native OpenGL and Vulkan acceptance clients over wwn-iland KMS/GBM for Apple and Android.";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -8,28 +8,88 @@
     wwn-toolchain.url = "github:Wawona/wwn-toolchain";
     wwn-toolchain.inputs.nixpkgs.follows = "nixpkgs";
     wwn-toolchain.inputs.rust-overlay.follows = "rust-overlay";
-    wwn-iland.url = "github:Wawona/wwn-iland";
+    # L2 -> L1 edge; see Wawona/docs/wwn-repo-dag.md. Track development so
+    # this leaf consumes the L1-owned MoltenVK/SwiftShader provider registry.
+    wwn-iland.url = "github:Wawona/wwn-iland/development";
     wwn-iland.inputs.nixpkgs.follows = "nixpkgs";
     wwn-iland.inputs.wwn-toolchain.follows = "wwn-toolchain";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, wwn-toolchain, wwn-iland, ... }:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+      wwn-toolchain,
+      wwn-iland,
+      ...
+    }:
     let
-      darwinSystems = [ "x86_64-darwin" "aarch64-darwin" ];
-      linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
+      darwinSystems = [
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
+      linuxSystems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
       allSystems = darwinSystems ++ linuxSystems;
       forAll = nixpkgs.lib.genAttrs allSystems;
       inherit (wwn-toolchain.lib) withPlatformVariants baseRegistry mkToolchains;
 
-      pkgsFor = system: import nixpkgs {
-        inherit system;
-        overlays = [ (import rust-overlay) ];
-        config = {
-          allowUnfree = true;
-          allowUnsupportedSystem = true;
-          android_sdk.accept_license = true;
+      pkgsFor =
+        system:
+        import nixpkgs {
+          inherit system;
+          overlays = [ (import rust-overlay) ];
+          config = {
+            allowUnfree = true;
+            allowUnsupportedSystem = true;
+            android_sdk.accept_license = true;
+          };
         };
-      };
+
+      mkAndroidSDK =
+        system: pkgs:
+        let
+          androidConfig = import "${wwn-toolchain}/dependencies/android/sdk-config.nix" {
+            inherit system;
+            lib = pkgs.lib;
+          };
+          androidComposition = pkgs.androidenv.composeAndroidPackages {
+            cmdLineToolsVersion = "latest";
+            platformToolsVersion = "latest";
+            buildToolsVersions = [ androidConfig.buildToolsVersion ];
+            platformVersions = [ (toString androidConfig.compileSdk) ];
+            abiVersions = [ androidConfig.hostEmulatorAbi ];
+            systemImageTypes = [ "google_apis_playstore" ];
+            includeEmulator = androidConfig.emulatorSupported;
+            includeSystemImages = androidConfig.emulatorSupported;
+            includeNDK = true;
+            includeCmake = true;
+            ndkVersions = [ androidConfig.ndkVersion ];
+            cmakeVersions = [ androidConfig.cmakeVersion ];
+            useGoogleAPIs = false;
+          };
+          sdkRoot = "${androidComposition.androidsdk}/libexec/android-sdk";
+        in
+        {
+          androidsdk = androidComposition.androidsdk;
+          inherit sdkRoot;
+          platformTools = androidComposition.platform-tools;
+          cmdlineTools = androidComposition.androidsdk;
+          buildTools = "${sdkRoot}/build-tools/${androidConfig.buildToolsVersion}";
+          cmake = "${sdkRoot}/cmake/${androidConfig.cmakeVersion}";
+          ndk = "${sdkRoot}/ndk/${androidConfig.ndkVersion}";
+          emulator =
+            if androidConfig.emulatorSupported then
+              androidComposition.emulator
+            else
+              androidComposition.androidsdk;
+          systemImage = "${sdkRoot}/system-images/android-${toString androidConfig.compileSdk}/google_apis_playstore/${androidConfig.hostEmulatorAbi}";
+          androidSdkPackages = { };
+          inherit androidConfig;
+        };
 
       kmscubeDir = ./dependencies/clients/kmscube;
     in
@@ -48,6 +108,15 @@
         };
         vkcube = withPlatformVariants {
           android = ./dependencies/clients/vkcube/android.nix;
+          wearos = ./dependencies/clients/vkcube/wearos.nix;
+          ios = ./dependencies/clients/vkcube/ios.nix;
+          ipados = ./dependencies/clients/vkcube/ipados.nix;
+          visionos = ./dependencies/clients/vkcube/visionos.nix;
+          macos = ./dependencies/clients/vkcube/macos.nix;
+          # Product policy: tvOS/watchOS never bundle Vulkan.
+          tvos = null;
+          watchos = null;
+          linux = null;
         };
         "opengl-cube" = withPlatformVariants {
           android = ./dependencies/clients/opengl-cube/android.nix;
@@ -66,19 +135,41 @@
         };
       };
 
-      packages = forAll (system:
+      packages = forAll (
+        system:
         let
           pkgs = pkgsFor system;
+          androidSDK = mkAndroidSDK system pkgs;
           tc = mkToolchains {
-            inherit pkgs;
+            inherit pkgs androidSDK;
+            pkgsAndroid = pkgs.pkgsCross.aarch64-android;
+            androidAllowExperimentalFallback = builtins.elem system [
+              "aarch64-darwin"
+              "aarch64-linux"
+            ];
             registry = baseRegistry // wwn-iland.registryFragment // self.registryFragment;
           };
           isDarwin = builtins.elem system darwinSystems;
         in
-        (if isDarwin then {
-          kmscube-ios = tc.buildForIOS "kmscube" { };
-          kmscube-macos = tc.buildForMacOS "kmscube" { };
-        } else { }));
+        (
+          if isDarwin then
+            {
+              kmscube-ios = tc.buildForIOS "kmscube" { };
+              kmscube-macos = tc.buildForMacOS "kmscube" { };
+              vkcube-ios = tc.buildForIOS "vkcube" { };
+              vkcube-ios-sim = tc.buildForIOS "vkcube" { simulator = true; };
+              vkcube-ipados = tc.buildForIPadOS "vkcube" { };
+              vkcube-visionos = tc.buildForVisionOS "vkcube" { };
+              vkcube-visionos-sim = tc.buildForVisionOS "vkcube" { simulator = true; };
+              vkcube-macos = tc.buildForMacOS "vkcube" { };
+            }
+          else
+            { }
+        )
+        // {
+          vkcube-android = tc.buildForAndroid "vkcube" { };
+        }
+      );
 
       formatter = forAll (system: (pkgsFor system).nixfmt-rfc-style);
     };

@@ -1,8 +1,16 @@
 # wwn-kmscube
 
-Wawona's port of [kmscube](https://gitlab.freedesktop.org/mesa/kmscube) — the canonical GBM/EGL/DRM spinning-cube GL smoke test. Built **in-process** as `libkmscube.a` (`kmscube_main`) on Apple mobile and Android, and as a standalone `kmscube` binary on macOS for local testing.
+Wawona's native graphics acceptance clients: the canonical
+[kmscube](https://gitlab.freedesktop.org/mesa/kmscube) GBM/EGL/DRM GL client and
+an iland-portable adaptation of [krh/vkcube](https://github.com/krh/vkcube).
+Both are static, in-process clients on Apple mobile and Android.
 
-KMS/GBM/EGL/DRM come from [wwn-iland](https://github.com/Wawona/wwn-iland) (IOSurface + ANGLE on Apple). This repo owns the kmscube program sources and Nix cross-build recipes; it does not vendor iland.
+KMS/GBM/DRM and all GPU providers come from
+[wwn-iland](https://github.com/Wawona/wwn-iland). `vkcube` calls Vulkan
+directly: MoltenVK or KosmicKrisp to Metal on Apple, and the system or bundled
+SwiftShader ICD on Android. Android's client-local dispatch keeps SwiftShader
+separate from the system loader used for host ANativeWindow WSI. It never opens
+KGSL directly or introduces an EGL, Zink, or Venus translation chain.
 
 ## Outputs
 
@@ -11,6 +19,8 @@ KMS/GBM/EGL/DRM come from [wwn-iland](https://github.com/Wawona/wwn-iland) (IOSu
 | `libkmscube.a` | In-process archive; `main` renamed to `kmscube_main` |
 | `kmscube` (macOS) | Standalone binary linked against iland + ANGLE |
 | `include/kmscube.h` | `kmscube_main` declaration for app linkers |
+| `libvkcube.a` | Native Vulkan renderer; `main` renamed to `vkcube_main` |
+| `include/vkcube.h` | `vkcube_main` declaration for app linkers |
 
 ## Nix registry
 
@@ -19,6 +29,7 @@ KMS/GBM/EGL/DRM come from [wwn-iland](https://github.com/Wawona/wwn-iland) (IOSu
 | Attribute | Role |
 |-----------|------|
 | `kmscube` | Primary entry — all platform recipes |
+| `vkcube` | Vulkan acceptance client for macOS, iOS/iPadOS/visionOS, Android/Wear OS |
 | `iland-gl-clients` | Legacy alias (same recipes); kept for flakes that still use that name |
 
 ## Platform coverage
@@ -30,6 +41,10 @@ KMS/GBM/EGL/DRM come from [wwn-iland](https://github.com/Wawona/wwn-iland) (IOSu
 | macOS | `macos.nix` | binary + `libkmscube.a` |
 | Android / Wear OS | `android.nix` | `libkmscube.a`; requires iland on Android |
 | Linux | `linux.nix` | nixpkgs `kmscube` reference binary |
+
+`vkcube` is available on macOS, iOS, iPadOS, visionOS, Android, and Wear OS.
+Its tvOS and watchOS registry variants are explicitly `null`: those products
+must not bundle Vulkan.
 
 Sources live in `upstream/` (vendored from the iland kmscube test tree; `kmscube_compat.h` handles Apple EGL display typing).
 
@@ -50,6 +65,9 @@ Link helper for Xcode app targets: `dependencies/generators/kmscube-ldflags.nix`
 ```sh
 nix build .#kmscube-ios
 nix build .#kmscube-macos
+nix build .#vkcube-ios
+nix build .#vkcube-macos
+nix build .#vkcube-android
 ```
 
 With Wawona's flake: `kmscube-ios`, `kmscube-macos`, `kmscube-android` (when iland Android is available).
@@ -57,7 +75,8 @@ With Wawona's flake: `kmscube-ios`, `kmscube-macos`, `kmscube-android` (when ila
 ## Layout
 
 ```
-upstream/                    # kmscube.c, esUtil.c, compat header
+upstream/                    # kmscube sources
+upstream/vkcube/             # krh/vkcube-derived portable KMS renderer + pinned SPIR-V
 dependencies/clients/kmscube/  # per-platform Nix recipes
 dependencies/generators/       # kmscube-ldflags.nix
 ```
