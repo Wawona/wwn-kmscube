@@ -52,7 +52,7 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
-#include "vulkan_dispatch_android.h"
+#include "vulkan_dispatch.h"
 
 #ifndef VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR
 #define VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR 0x00000001

@@ -1,9 +1,24 @@
 #pragma once
 
-#ifdef __ANDROID__
+/*
+ * Runtime Vulkan dispatch for the hosts that pick their provider at runtime:
+ * Android (system libvulkan.so vs bundled SwiftShader) and macOS (MoltenVK vs
+ * KosmicKrisp, both bundled as dylibs with no loader alongside them). Apple
+ * mobile links MoltenVK statically, so it calls the vk* symbols directly.
+ */
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_OSX)
+#define WWN_VKCUBE_RUNTIME_DISPATCH 1
+#endif
+
+#ifdef WWN_VKCUBE_RUNTIME_DISPATCH
 
 #include <dlfcn.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static void *wwn_vk_library;
 static PFN_vkGetInstanceProcAddr wwn_vkGetInstanceProcAddr;
@@ -80,9 +95,22 @@ WWN_VK_INSTANCE_FUNCTIONS(WWN_DECLARE_VK)
 WWN_VK_DEVICE_FUNCTIONS(WWN_DECLARE_VK)
 #undef WWN_DECLARE_VK
 
-static int wwn_vkcube_load_global_dispatch(void) {
+static const char *wwn_vkcube_provider_path(void) {
+#if defined(__ANDROID__)
+  /* Bundled SwiftShader when Settings selected it, else the system loader. */
   const char *client_icd = getenv("WWN_SWIFTSHADER_LIBRARY");
-  const char *path = client_icd && client_icd[0] ? client_icd : "libvulkan.so";
+  return client_icd && client_icd[0] ? client_icd : "libvulkan.so";
+#else
+  /* Set by WWNSettings_ApplyGraphicsDriverSelection to the bundled ICD dylib
+   * for the selected driver. There is no Vulkan loader in the bundle, so this
+   * is the ICD itself rather than a manifest. */
+  const char *icd = getenv("WWN_VULKAN_LIBRARY");
+  return icd && icd[0] ? icd : "libMoltenVK.dylib";
+#endif
+}
+
+static int wwn_vkcube_load_global_dispatch(void) {
+  const char *path = wwn_vkcube_provider_path();
   wwn_vk_library = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (!wwn_vk_library) {
     fprintf(stderr, "vkcube: cannot load Vulkan provider %s: %s\n", path,
@@ -91,6 +119,11 @@ static int wwn_vkcube_load_global_dispatch(void) {
   }
   wwn_vkGetInstanceProcAddr =
       (PFN_vkGetInstanceProcAddr)dlsym(wwn_vk_library, "vkGetInstanceProcAddr");
+  if (!wwn_vkGetInstanceProcAddr) {
+    /* Mesa-derived ICDs (KosmicKrisp) only export the ICD-negotiated name. */
+    wwn_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(
+        wwn_vk_library, "vk_icdGetInstanceProcAddr");
+  }
   if (!wwn_vkGetInstanceProcAddr) {
     fprintf(stderr, "vkcube: %s has no vkGetInstanceProcAddr\n", path);
     return -1;
@@ -200,7 +233,7 @@ static void wwn_vkcube_close_dispatch(void) {
 #define vkDestroyCommandPool wwn_vkDestroyCommandPool
 #define vkDestroyDevice wwn_vkDestroyDevice
 
-#else
+#else /* statically linked provider (Apple mobile) */
 
 static int wwn_vkcube_load_global_dispatch(void) { return 0; }
 static int wwn_vkcube_load_instance_dispatch(VkInstance instance) {
