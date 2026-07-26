@@ -341,6 +341,18 @@ static int init_egl(void)
 	}
 
 	printf("opengl-cube: GL_RENDERER \"%s\"\n", glGetString(GL_RENDERER));
+
+	/* A config with EGL_DEPTH_SIZE does not guarantee the surface got a depth
+	 * attachment, and without one GL_DEPTH_TEST silently does nothing and the
+	 * cube's far faces draw over its near ones. Say so rather than let it look
+	 * like a bug in the cube. */
+	GLint depth_type = GL_NONE;
+	glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_DEPTH,
+					      GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,
+					      &depth_type);
+	printf("opengl-cube: default framebuffer depth attachment: %s\n",
+	       depth_type == GL_NONE ? "NONE (depth test will not work)"
+				     : "present");
 	return 0;
 }
 
@@ -461,9 +473,16 @@ static double now_seconds(void)
 	       (double)(ts.tv_nsec - start.tv_nsec) / 1e9;
 }
 
+/* >= 0 pins the animation so a frame can be rendered twice identically; used
+ * only by the depth self-test. */
+static float frozen_animation = -1.0f;
+
 /* Fraction through a loop of `duration` seconds, as upstream's animation(). */
 static float animation(float duration)
 {
+	if (frozen_animation >= 0.0f)
+		return frozen_animation;
+
 	unsigned long ms_time = (unsigned long)(now_seconds() * 1000.0);
 	unsigned int ms_duration = (unsigned int)(duration * 1000.0f);
 	float ms_position = (float)(ms_time % ms_duration);
@@ -486,6 +505,45 @@ static void report_fps(void)
 		last_report = now;
 		frames = 0;
 	}
+}
+
+static void render(void);
+
+/* WWN_CUBE_DEPTH_SELFTEST=1: render one frame twice, with and without the depth
+ * test, and compare. A surface whose depth attachment exists but is not actually
+ * bound produces byte-identical output both ways, which on screen looks like
+ * wrong face culling rather than like a missing depth buffer. */
+static void depth_selftest(void)
+{
+	size_t n = (size_t)gl.width * (size_t)gl.height * 4;
+	unsigned char *with = malloc(n), *without = malloc(n);
+	if (!with || !without) {
+		free(with);
+		free(without);
+		return;
+	}
+
+	frozen_animation = 0.1f;
+
+	render();
+	glFinish();
+	glReadPixels(0, 0, gl.width, gl.height, GL_RGBA, GL_UNSIGNED_BYTE, with);
+
+	glDisable(GL_DEPTH_TEST);
+	render();
+	glFinish();
+	glReadPixels(0, 0, gl.width, gl.height, GL_RGBA, GL_UNSIGNED_BYTE, without);
+	glEnable(GL_DEPTH_TEST);
+
+	printf("opengl-cube: depth self-test: %s\n",
+	       memcmp(with, without, n) != 0
+		   ? "depth test changes the image (working)"
+		   : "IDENTICAL with and without GL_DEPTH_TEST — depth is not applied");
+	fflush(stdout);
+
+	frozen_animation = -1.0f;
+	free(with);
+	free(without);
 }
 
 static void render(void)
@@ -564,6 +622,9 @@ int main(int argc, char *argv[])
 
 	printf("opengl-cube: running as a Wayland client at %dx%d\n",
 	       gl.width, gl.height);
+
+	if (getenv("WWN_CUBE_DEPTH_SELFTEST"))
+		depth_selftest();
 	fflush(stdout);
 
 	draw_frame();
