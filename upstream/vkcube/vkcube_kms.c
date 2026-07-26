@@ -1,5 +1,5 @@
 /*
- * Wayland + iland IOSurface dmabuf adaptation of krh/vkcube.
+ * Portable KMS/GBM adaptation of krh/vkcube.
  *
  * Upstream: https://github.com/krh/vkcube
  * Revision: ffd566971fac916fc90d33a442369d5717ceb2a9
@@ -27,13 +27,16 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  *
- * Wayland adaptation: renders into ordinary Vulkan images, copies to
- * host-coherent staging, and posts BGRA pixels through iland's Wayland
- * winsys (IOSurface + zwp_linux_dmabuf_v1 modifier). Same ICD-neutral path
- * as the KMS variant (see vkcube_kms.c), but as a real compositor client
- * (xdg-shell) rather than an iland virtual DRM host.
+ * krh/vkcube's original KMS path imported dma-bufs through the removed
+ * VK_INTEL_external_memory extension. Wawona instead renders into ordinary
+ * Vulkan images, copies to host-coherent staging buffers, and writes those
+ * pixels into iland GBM scanout buffers. This keeps Vulkan provider-neutral
+ * (MoltenVK/KosmicKrisp on Apple; system/SwiftShader/Turnip on Android) while
+ * preserving the portable KMS/GBM presentation contract.
  */
 
+#include <errno.h>
+#include <fcntl.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -43,11 +46,11 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <wayland-client.h>
+#include <drm_fourcc.h>
+#include <gbm.h>
 #include <vulkan/vulkan.h>
-
-#include "xdg-shell-client-protocol.h"
-#include "iland_wl_winsys.h"
+#include <xf86drm.h>
+#include <xf86drmMode.h>
 
 #include "vulkan_dispatch.h"
 
@@ -62,9 +65,7 @@
 #endif
 
 #define BUFFER_COUNT 2
-#define DEFAULT_WIDTH 800
-#define DEFAULT_HEIGHT 800
-#define DEFAULT_FRAMES 0
+#define DEFAULT_FRAMES 120
 
 struct matrix {
   float m[4][4];
@@ -77,6 +78,9 @@ struct ubo {
 };
 
 struct buffer {
+  struct gbm_bo *bo;
+  uint32_t fb;
+  uint32_t stride;
   VkImage image;
   VkDeviceMemory image_memory;
   VkImageView view;
@@ -89,17 +93,12 @@ struct buffer {
 };
 
 struct app {
-  struct wl_display *display;
-  struct wl_registry *registry;
-  struct wl_compositor *compositor;
-  struct xdg_wm_base *wm_base;
-  struct wl_surface *surface;
-  struct xdg_surface *xdg_surface;
-  struct xdg_toplevel *toplevel;
-  IlandWlWinsys *winsys;
-  IlandWlSwapchain *swapchain;
-  bool configured;
-  bool running;
+  int drm_fd;
+  struct gbm_device *gbm;
+  drmModeConnector *connector;
+  drmModeCrtc *crtc;
+  uint32_t connector_id;
+  uint32_t crtc_id;
   uint32_t width;
   uint32_t height;
 
@@ -278,114 +277,50 @@ static int find_memory_type(struct app *app, uint32_t allowed,
   return -1;
 }
 
-static void wm_base_ping(void *data, struct xdg_wm_base *wm_base, uint32_t serial) {
-  (void)data;
-  xdg_wm_base_pong(wm_base, serial);
-}
-
-static const struct xdg_wm_base_listener wm_base_listener = { wm_base_ping };
-
-static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface,
-                                  uint32_t serial) {
-  struct app *app = data;
-  xdg_surface_ack_configure(xdg_surface, serial);
-  app->configured = true;
-}
-
-static const struct xdg_surface_listener xdg_surface_listener = {
-    xdg_surface_configure,
-};
-
-static void toplevel_configure(void *data, struct xdg_toplevel *toplevel,
-                               int32_t width, int32_t height, struct wl_array *states) {
-  struct app *app = data;
-  (void)toplevel;
-  (void)states;
-  if (width > 0)
-    app->width = (uint32_t)width;
-  if (height > 0)
-    app->height = (uint32_t)height;
-}
-
-static void toplevel_close(void *data, struct xdg_toplevel *toplevel) {
-  struct app *app = data;
-  (void)toplevel;
-  app->running = false;
-}
-
-static const struct xdg_toplevel_listener toplevel_listener = {
-    toplevel_configure,
-    toplevel_close,
-};
-
-static void registry_global(void *data, struct wl_registry *registry, uint32_t name,
-                            const char *interface, uint32_t version) {
-  struct app *app = data;
-  (void)version;
-  if (strcmp(interface, "wl_compositor") == 0) {
-    app->compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 1);
-  } else if (strcmp(interface, "xdg_wm_base") == 0) {
-    app->wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface, 1);
-    xdg_wm_base_add_listener(app->wm_base, &wm_base_listener, NULL);
-  }
-}
-
-static void registry_global_remove(void *data, struct wl_registry *registry, uint32_t name) {
-  (void)data;
-  (void)registry;
-  (void)name;
-}
-
-static const struct wl_registry_listener registry_listener = {
-    registry_global,
-    registry_global_remove,
-};
-
-static int init_wayland(struct app *app) {
-  app->display = wl_display_connect(NULL);
-  if (!app->display) {
-    fprintf(stderr, "vkcube: wl_display_connect failed (WAYLAND_DISPLAY set?)\n");
+static int init_kms(struct app *app) {
+  app->drm_fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
+  if (app->drm_fd < 0) {
+    fprintf(stderr, "vkcube: open /dev/dri/card0 failed: %s\n", strerror(errno));
     return -1;
   }
-  app->registry = wl_display_get_registry(app->display);
-  wl_registry_add_listener(app->registry, &registry_listener, app);
-  wl_display_roundtrip(app->display);
-  if (!app->compositor || !app->wm_base) {
-    fprintf(stderr, "vkcube: compositor lacks wl_compositor/xdg_wm_base\n");
-    return -1;
-  }
-  app->surface = wl_compositor_create_surface(app->compositor);
-  app->xdg_surface = xdg_wm_base_get_xdg_surface(app->wm_base, app->surface);
-  xdg_surface_add_listener(app->xdg_surface, &xdg_surface_listener, app);
-  app->toplevel = xdg_surface_get_toplevel(app->xdg_surface);
-  xdg_toplevel_add_listener(app->toplevel, &toplevel_listener, app);
-  xdg_toplevel_set_title(app->toplevel, "Vulkan Cube");
-  xdg_toplevel_set_app_id(app->toplevel, "org.wawona.vkcube");
-  wl_surface_commit(app->surface);
-  while (!app->configured) {
-    if (wl_display_dispatch(app->display) < 0) {
-      fprintf(stderr, "vkcube: disconnected before first configure\n");
-      return -1;
+
+  drmModeRes *resources = drmModeGetResources(app->drm_fd);
+  if (!resources)
+    return fprintf(stderr, "vkcube: no DRM resources\n"), -1;
+  for (int i = 0; i < resources->count_connectors; ++i) {
+    drmModeConnector *connector =
+        drmModeGetConnector(app->drm_fd, resources->connectors[i]);
+    if (connector && connector->connection == DRM_MODE_CONNECTED &&
+        connector->count_modes > 0) {
+      app->connector = connector;
+      break;
     }
+    drmModeFreeConnector(connector);
   }
-  if (app->width == 0)
-    app->width = DEFAULT_WIDTH;
-  if (app->height == 0)
-    app->height = DEFAULT_HEIGHT;
+  if (!app->connector) {
+    drmModeFreeResources(resources);
+    return fprintf(stderr, "vkcube: no connected connector\n"), -1;
+  }
 
-  app->winsys = iland_wl_winsys_create(app->display);
-  if (!app->winsys) {
-    fprintf(stderr, "vkcube: compositor lacks zwp_linux_dmabuf_v1\n");
-    return -1;
-  }
-  app->swapchain = iland_wl_swapchain_create_for_surface(
-      app->winsys, app->surface, app->width, app->height,
-      ILAND_WL_SWAPCHAIN_TOP_DOWN);
-  if (!app->swapchain) {
-    fprintf(stderr, "vkcube: iland_wl_swapchain_create_for_surface failed\n");
-    return -1;
-  }
-  app->running = true;
+  drmModeEncoder *encoder = NULL;
+  if (app->connector->encoder_id)
+    encoder = drmModeGetEncoder(app->drm_fd, app->connector->encoder_id);
+  if (!encoder && app->connector->count_encoders > 0)
+    encoder = drmModeGetEncoder(app->drm_fd, app->connector->encoders[0]);
+  app->connector_id = app->connector->connector_id;
+  app->crtc_id = encoder ? encoder->crtc_id : resources->crtcs[0];
+  app->crtc = drmModeGetCrtc(app->drm_fd, app->crtc_id);
+  drmModeFreeEncoder(encoder);
+  drmModeFreeResources(resources);
+  if (!app->crtc)
+    return fprintf(stderr, "vkcube: no CRTC\n"), -1;
+
+  drmModeModeInfo *mode = &app->connector->modes[0];
+  app->width = mode->hdisplay;
+  app->height = mode->vdisplay;
+  app->gbm = gbm_create_device(app->drm_fd);
+  if (!app->gbm)
+    return fprintf(stderr, "vkcube: gbm_create_device failed\n"), -1;
   return 0;
 }
 
@@ -401,7 +336,7 @@ static int init_vulkan(struct app *app) {
       .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
       .pApplicationName = "vkcube",
       .applicationVersion = VK_MAKE_VERSION(0, 1, 0),
-      .pEngineName = "wwn-iland-wayland",
+      .pEngineName = "wwn-iland-kms",
       .engineVersion = VK_MAKE_VERSION(1, 0, 0),
       .apiVersion = VK_API_VERSION_1_0,
   };
@@ -725,6 +660,19 @@ static int init_pipeline(struct app *app) {
 static int init_buffers(struct app *app) {
   for (uint32_t i = 0; i < BUFFER_COUNT; ++i) {
     struct buffer *buffer = &app->buffers[i];
+    buffer->bo = gbm_bo_create(app->gbm, app->width, app->height,
+                               GBM_FORMAT_XRGB8888,
+                               GBM_BO_USE_SCANOUT | GBM_BO_USE_WRITE);
+    if (!buffer->bo)
+      return fprintf(stderr, "vkcube: gbm_bo_create failed\n"), -1;
+    buffer->stride = gbm_bo_get_stride(buffer->bo);
+    uint32_t handles[4] = {gbm_bo_get_handle(buffer->bo).u32, 0, 0, 0};
+    uint32_t strides[4] = {buffer->stride, 0, 0, 0};
+    uint32_t offsets[4] = {0, 0, 0, 0};
+    if (drmModeAddFB2(app->drm_fd, app->width, app->height, DRM_FORMAT_XRGB8888,
+                      handles, strides, offsets, &buffer->fb, 0) != 0)
+      return fprintf(stderr, "vkcube: drmModeAddFB2 failed: %s\n", strerror(errno)),
+             -1;
 
     const VkImageCreateInfo image_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -882,12 +830,23 @@ static int render_frame(struct app *app, struct buffer *buffer, uint32_t frame) 
   VK_CHECK(vkQueueSubmit(app->queue, 1, &submit, buffer->fence));
   VK_CHECK(vkWaitForFences(app->device, 1, &buffer->fence, VK_TRUE, UINT64_MAX));
 
-  if (iland_wl_swapchain_present_pixels(app->swapchain, buffer->staging_map,
-                                         app->width * 4u) != 0)
-    return fprintf(stderr, "vkcube: wayland present failed\n"), -1;
-  /* Drain releases so acquire does not stall forever. */
-  wl_display_dispatch_pending(app->display);
-  wl_display_flush(app->display);
+  const uint8_t *source = buffer->staging_map;
+  if (buffer->stride == app->width * 4u) {
+    if (gbm_bo_write(buffer->bo, source, (size_t)buffer->stride * app->height) != 0)
+      return fprintf(stderr, "vkcube: gbm_bo_write failed\n"), -1;
+  } else {
+    uint8_t *packed = calloc(app->height, buffer->stride);
+    if (!packed)
+      return -1;
+    for (uint32_t y = 0; y < app->height; ++y)
+      memcpy(packed + (size_t)y * buffer->stride,
+             source + (size_t)y * app->width * 4u, app->width * 4u);
+    int result = gbm_bo_write(buffer->bo, packed,
+                              (size_t)buffer->stride * app->height);
+    free(packed);
+    if (result != 0)
+      return fprintf(stderr, "vkcube: gbm_bo_write failed\n"), -1;
+  }
   return 0;
 }
 
@@ -912,6 +871,10 @@ static void destroy_app(struct app *app) {
       vkDestroyImage(app->device, buffer->image, NULL);
     if (app->device && buffer->image_memory)
       vkFreeMemory(app->device, buffer->image_memory, NULL);
+    if (buffer->fb)
+      drmModeRmFB(app->drm_fd, buffer->fb);
+    if (buffer->bo)
+      gbm_bo_destroy(buffer->bo);
   }
   if (app->device && app->vertex_map)
     vkUnmapMemory(app->device, app->vertex_memory);
@@ -935,24 +898,12 @@ static void destroy_app(struct app *app) {
     vkDestroyDevice(app->device, NULL);
   if (app->instance)
     vkDestroyInstance(app->instance, NULL);
-  if (app->swapchain)
-    iland_wl_swapchain_destroy(app->swapchain);
-  if (app->winsys)
-    iland_wl_winsys_destroy(app->winsys);
-  if (app->toplevel)
-    xdg_toplevel_destroy(app->toplevel);
-  if (app->xdg_surface)
-    xdg_surface_destroy(app->xdg_surface);
-  if (app->surface)
-    wl_surface_destroy(app->surface);
-  if (app->wm_base)
-    xdg_wm_base_destroy(app->wm_base);
-  if (app->compositor)
-    wl_compositor_destroy(app->compositor);
-  if (app->registry)
-    wl_registry_destroy(app->registry);
-  if (app->display)
-    wl_display_disconnect(app->display);
+  if (app->gbm)
+    gbm_device_destroy(app->gbm);
+  drmModeFreeCrtc(app->crtc);
+  drmModeFreeConnector(app->connector);
+  if (app->drm_fd >= 0)
+    close(app->drm_fd);
 }
 
 static uint32_t parse_frame_count(int argc, char **argv) {
@@ -964,8 +915,7 @@ static uint32_t parse_frame_count(int argc, char **argv) {
     const char prefix[] = "--frames=";
     if (strncmp(argv[i], prefix, sizeof(prefix) - 1) == 0)
       frames = (uint32_t)strtoul(argv[i] + sizeof(prefix) - 1, NULL, 10);
-    else if (strcmp(argv[i], "--display-mode=kms") != 0 &&
-             strcmp(argv[i], "--display-mode=wayland") != 0)
+    else if (strcmp(argv[i], "--display-mode=kms") != 0)
       fprintf(stderr, "vkcube: ignoring option %s\n", argv[i]);
   }
   return frames;
@@ -974,27 +924,32 @@ static uint32_t parse_frame_count(int argc, char **argv) {
 int main(int argc, char **argv) {
   struct app app;
   memset(&app, 0, sizeof(app));
-  app.width = DEFAULT_WIDTH;
-  app.height = DEFAULT_HEIGHT;
+  app.drm_fd = -1;
   int result = -1;
-  if (init_wayland(&app) != 0 || init_vulkan(&app) != 0 ||
+  if (init_kms(&app) != 0 || init_vulkan(&app) != 0 ||
       init_render_pass(&app) != 0 || init_geometry(&app) != 0 ||
       init_pipeline(&app) != 0 || init_buffers(&app) != 0)
     goto out;
 
   uint32_t frames = parse_frame_count(argc, argv);
-  fprintf(stderr,
-          "vkcube: rendering %ux%u via Vulkan -> Wayland IOSurface dmabuf\n",
+  fprintf(stderr, "vkcube: rendering %ux%u via Vulkan -> iland KMS/GBM\n",
           app.width, app.height);
-  for (uint32_t frame = 0; app.running && (frames == 0 || frame < frames);
-       ++frame) {
-    /* Non-blocking: present already flushes; drain configure/close here. */
-    wl_display_dispatch_pending(app.display);
-    wl_display_flush(app.display);
-
+  for (uint32_t frame = 0; frames == 0 || frame < frames; ++frame) {
     struct buffer *buffer = &app.buffers[frame % BUFFER_COUNT];
     if (render_frame(&app, buffer, frame) != 0)
       goto out;
+    int present;
+    if (frame == 0)
+      present = drmModeSetCrtc(app.drm_fd, app.crtc_id, buffer->fb, 0, 0,
+                               &app.connector_id, 1, &app.connector->modes[0]);
+    else
+      present = drmModePageFlip(app.drm_fd, app.crtc_id, buffer->fb, 0, NULL);
+    if (present != 0) {
+      fprintf(stderr, "vkcube: KMS present failed: %s\n", strerror(errno));
+      goto out;
+    }
+    struct timespec delay = {.tv_nsec = 16000000};
+    nanosleep(&delay, NULL);
   }
   result = 0;
 out:

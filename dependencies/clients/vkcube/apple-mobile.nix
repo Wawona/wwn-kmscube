@@ -1,6 +1,6 @@
-# krh/vkcube over wwn-iland KMS/GBM + MoltenVK — Apple mobile archive.
-# tvOS/watchOS deliberately have no registry variant: those products forbid
-# Vulkan. iOS, iPadOS, and visionOS use the target-native MoltenVK static slice.
+# krh/vkcube as a Wayland client over iland's IOSurface dmabuf winsys +
+# MoltenVK — Apple mobile archive. tvOS/watchOS deliberately have no registry
+# variant: those products forbid Vulkan.
 {
   lib,
   pkgs,
@@ -14,11 +14,13 @@
 
 let
   iland = buildModule.buildForIOS "iland" { inherit simulator; };
+  libwayland = buildModule.buildForIOS "libwayland" { inherit simulator; };
   mobile = (import "${toolchainSrc}/dependencies/toolchains/apple-mobile-platform.nix") {
     inherit iosToolchain simulator;
   };
   sdkPlatform = mobile.sdkPlatform;
   minVerFlag = mobile.minVerFlag;
+  waylandProtocols = pkgs.wayland-protocols;
 in
 pkgs.stdenv.mkDerivation {
   pname = "vkcube-apple-mobile";
@@ -28,6 +30,8 @@ pkgs.stdenv.mkDerivation {
 
   __noChroot = true;
   dontConfigure = true;
+
+  nativeBuildInputs = [ pkgs.wayland-scanner ];
 
   buildPhase = ''
     runHook preBuild
@@ -40,13 +44,18 @@ pkgs.stdenv.mkDerivation {
     CLANG="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
     AR="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin/ar"
 
-    CFLAGS="-arch arm64 -isysroot $SDKROOT ${minVerFlag} -fPIC -O2 -std=c11 \
-      -I${iland}/include -I${pkgs.vulkan-headers}/include \
-      -include ${iland}/include/iland_drm_open_compat.h"
+    XDG_XML="${waylandProtocols}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml"
+    wayland-scanner client-header "$XDG_XML" xdg-shell-client-protocol.h
+    wayland-scanner private-code  "$XDG_XML" xdg-shell-protocol.c
 
-    echo "CC libvkcube.a (native in-process vkcube_main)"
+    CFLAGS="-arch arm64 -isysroot $SDKROOT ${minVerFlag} -fPIC -O2 -std=c11 \
+      -I. -I${iland}/include -I${pkgs.vulkan-headers}/include \
+      -I${libwayland}/include -I${libwayland}/include/wayland"
+
+    echo "CC libvkcube.a (native in-process vkcube_main, Wayland)"
     "$CLANG" -c $CFLAGS -Dmain=vkcube_main main.c -o vkcube_main.o
-    "$AR" rcs libvkcube.a vkcube_main.o
+    "$CLANG" -c $CFLAGS xdg-shell-protocol.c -o xdg-shell-protocol.o
+    "$AR" rcs libvkcube.a vkcube_main.o xdg-shell-protocol.o
 
     runHook postBuild
   '';
@@ -61,12 +70,13 @@ pkgs.stdenv.mkDerivation {
     #endif
     EOF
     echo "${iland}" > "$out/nix-support/iland-path"
+    echo "${libwayland}" > "$out/nix-support/libwayland-path"
     echo moltenvk > "$out/nix-support/required-vulkan-registry-providers"
     cat > "$out/nix-support/vkcube-build-metadata.json" <<'EOF'
     {
       "upstream": "krh/vkcube",
       "revision": "ffd566971fac916fc90d33a442369d5717ceb2a9",
-      "presentation": "iland-kms-gbm",
+      "presentation": "wayland-iosurface-dmabuf",
       "vulkanProvider": "moltenvk-static",
       "translationLayers": []
     }
@@ -74,7 +84,7 @@ pkgs.stdenv.mkDerivation {
   '';
 
   meta = with lib; {
-    description = "Native in-process Vulkan cube over iland KMS/GBM for Apple mobile";
+    description = "Native in-process Vulkan cube over Wayland IOSurface dmabuf for Apple mobile";
     homepage = "https://github.com/krh/vkcube";
     license = licenses.mit;
     platforms = platforms.darwin;
