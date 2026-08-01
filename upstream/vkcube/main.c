@@ -100,8 +100,11 @@ struct app {
   IlandWlSwapchain *swapchain;
   bool configured;
   bool running;
+  bool size_dirty;
   uint32_t width;
   uint32_t height;
+  uint32_t pending_width;
+  uint32_t pending_height;
 
   VkInstance instance;
   VkPhysicalDevice physical_device;
@@ -301,10 +304,17 @@ static void toplevel_configure(void *data, struct xdg_toplevel *toplevel,
   struct app *app = data;
   (void)toplevel;
   (void)states;
-  if (width > 0)
-    app->width = (uint32_t)width;
-  if (height > 0)
-    app->height = (uint32_t)height;
+  /* 0x0 means "pick your own size" — keep the pending suggestion. */
+  if (width <= 0 || height <= 0)
+    return;
+  if ((uint32_t)width == app->pending_width &&
+      (uint32_t)height == app->pending_height)
+    return;
+  app->pending_width = (uint32_t)width;
+  app->pending_height = (uint32_t)height;
+  /* After Vulkan targets exist, rebuild on the render thread (main loop). */
+  if (app->device != VK_NULL_HANDLE)
+    app->size_dirty = true;
 }
 
 static void toplevel_close(void *data, struct xdg_toplevel *toplevel) {
@@ -368,10 +378,12 @@ static int init_wayland(struct app *app) {
       return -1;
     }
   }
-  if (app->width == 0)
-    app->width = DEFAULT_WIDTH;
-  if (app->height == 0)
-    app->height = DEFAULT_HEIGHT;
+  if (app->pending_width == 0)
+    app->pending_width = DEFAULT_WIDTH;
+  if (app->pending_height == 0)
+    app->pending_height = DEFAULT_HEIGHT;
+  app->width = app->pending_width;
+  app->height = app->pending_height;
 
   app->winsys = iland_wl_winsys_create(app->display);
   if (!app->winsys) {
@@ -805,6 +817,72 @@ static int init_buffers(struct app *app) {
   return 0;
 }
 
+static void destroy_frame_buffers(struct app *app) {
+  if (!app->device)
+    return;
+  vkDeviceWaitIdle(app->device);
+  for (uint32_t i = 0; i < BUFFER_COUNT; ++i) {
+    struct buffer *buffer = &app->buffers[i];
+    if (buffer->fence)
+      vkDestroyFence(app->device, buffer->fence, NULL);
+    if (buffer->command_buffer)
+      vkFreeCommandBuffers(app->device, app->command_pool, 1,
+                           &buffer->command_buffer);
+    if (buffer->staging_map)
+      vkUnmapMemory(app->device, buffer->staging_memory);
+    if (buffer->staging)
+      vkDestroyBuffer(app->device, buffer->staging, NULL);
+    if (buffer->staging_memory)
+      vkFreeMemory(app->device, buffer->staging_memory, NULL);
+    if (buffer->framebuffer)
+      vkDestroyFramebuffer(app->device, buffer->framebuffer, NULL);
+    if (buffer->view)
+      vkDestroyImageView(app->device, buffer->view, NULL);
+    if (buffer->image)
+      vkDestroyImage(app->device, buffer->image, NULL);
+    if (buffer->image_memory)
+      vkFreeMemory(app->device, buffer->image_memory, NULL);
+    memset(buffer, 0, sizeof(*buffer));
+  }
+}
+
+/* Match opengl-cube: honor xdg_toplevel configure by resizing the Wayland
+ * dmabuf swapchain and rebuilding Vulkan color/staging targets. */
+static int apply_pending_size(struct app *app) {
+  if (!app->size_dirty)
+    return 0;
+  if (app->pending_width == 0 || app->pending_height == 0) {
+    app->size_dirty = false;
+    return 0;
+  }
+  if (app->pending_width == app->width && app->pending_height == app->height &&
+      app->swapchain) {
+    app->size_dirty = false;
+    return 0;
+  }
+
+  app->width = app->pending_width;
+  app->height = app->pending_height;
+
+  if (app->swapchain &&
+      iland_wl_swapchain_resize(app->swapchain, app->width, app->height) < 0)
+    return fprintf(stderr, "vkcube: swapchain resize to %ux%u failed\n",
+                   app->width, app->height),
+           -1;
+
+  if (app->device != VK_NULL_HANDLE && app->render_pass != VK_NULL_HANDLE) {
+    destroy_frame_buffers(app);
+    if (init_buffers(app) != 0)
+      return fprintf(stderr, "vkcube: buffer recreate at %ux%u failed\n",
+                     app->width, app->height),
+             -1;
+  }
+
+  fprintf(stderr, "vkcube: resized to %ux%u\n", app->width, app->height);
+  app->size_dirty = false;
+  return 0;
+}
+
 static void update_ubo(struct app *app, uint32_t frame) {
   struct ubo ubo;
   matrix_identity(&ubo.modelview);
@@ -892,27 +970,7 @@ static int render_frame(struct app *app, struct buffer *buffer, uint32_t frame) 
 }
 
 static void destroy_app(struct app *app) {
-  if (app->device)
-    vkDeviceWaitIdle(app->device);
-  for (uint32_t i = 0; i < BUFFER_COUNT; ++i) {
-    struct buffer *buffer = &app->buffers[i];
-    if (app->device && buffer->fence)
-      vkDestroyFence(app->device, buffer->fence, NULL);
-    if (app->device && buffer->staging_map)
-      vkUnmapMemory(app->device, buffer->staging_memory);
-    if (app->device && buffer->staging)
-      vkDestroyBuffer(app->device, buffer->staging, NULL);
-    if (app->device && buffer->staging_memory)
-      vkFreeMemory(app->device, buffer->staging_memory, NULL);
-    if (app->device && buffer->framebuffer)
-      vkDestroyFramebuffer(app->device, buffer->framebuffer, NULL);
-    if (app->device && buffer->view)
-      vkDestroyImageView(app->device, buffer->view, NULL);
-    if (app->device && buffer->image)
-      vkDestroyImage(app->device, buffer->image, NULL);
-    if (app->device && buffer->image_memory)
-      vkFreeMemory(app->device, buffer->image_memory, NULL);
-  }
+  destroy_frame_buffers(app);
   if (app->device && app->vertex_map)
     vkUnmapMemory(app->device, app->vertex_memory);
   if (app->device && app->vertex_buffer)
@@ -991,6 +1049,9 @@ int main(int argc, char **argv) {
     /* Non-blocking: present already flushes; drain configure/close here. */
     wl_display_dispatch_pending(app.display);
     wl_display_flush(app.display);
+
+    if (apply_pending_size(&app) != 0)
+      goto out;
 
     struct buffer *buffer = &app.buffers[frame % BUFFER_COUNT];
     if (render_frame(&app, buffer, frame) != 0)
