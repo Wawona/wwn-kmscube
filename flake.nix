@@ -92,6 +92,7 @@
         };
 
       kmscubeDir = ./dependencies/clients/kmscube;
+      gbmEs2DemoDir = ./dependencies/clients/gbm-es2-demo;
     in
     {
       registryFragment = {
@@ -105,6 +106,17 @@
           watchos = kmscubeDir + "/watchos.nix";
           macos = kmscubeDir + "/macos.nix";
           linux = kmscubeDir + "/linux.nix";
+        };
+        "gbm-es2-demo" = withPlatformVariants {
+          android = gbmEs2DemoDir + "/android.nix";
+          wearos = gbmEs2DemoDir + "/wearos.nix";
+          ios = gbmEs2DemoDir + "/ios.nix";
+          tvos = gbmEs2DemoDir + "/tvos.nix";
+          ipados = gbmEs2DemoDir + "/ipados.nix";
+          visionos = gbmEs2DemoDir + "/visionos.nix";
+          watchos = gbmEs2DemoDir + "/watchos.nix";
+          macos = gbmEs2DemoDir + "/macos.nix";
+          linux = null;
         };
         vkcube = withPlatformVariants {
           android = ./dependencies/clients/vkcube/android.nix;
@@ -171,6 +183,8 @@
             {
               kmscube-ios = tc.buildForIOS "kmscube" { };
               kmscube-macos = tc.buildForMacOS "kmscube" { };
+              gbm-es2-demo-ios = tc.buildForIOS "gbm-es2-demo" { };
+              gbm-es2-demo-macos = tc.buildForMacOS "gbm-es2-demo" { };
               vkcube-ios = tc.buildForIOS "vkcube" { };
               vkcube-ios-sim = tc.buildForIOS "vkcube" { simulator = true; };
               vkcube-ipados = tc.buildForIPadOS "vkcube" { };
@@ -189,6 +203,8 @@
         // {
           vkcube-android = tc.buildForAndroid "vkcube" { };
           opengl-cube-android = tc.buildForAndroid "opengl-cube" { };
+          gbm-es2-demo-android = tc.buildForAndroid "gbm-es2-demo" { };
+          kmscube-android = tc.buildForAndroid "kmscube" { };
         }
       );
 
