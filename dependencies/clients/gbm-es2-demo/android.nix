@@ -67,6 +67,12 @@ EOF
     description = "gbm_es2_demo in-process archive over iland + ANGLE for Android";
     homepage = "https://github.com/ds-hwang/gbm_es2_demo";
     license = licenses.mit;
-    platforms = platforms.linux;
+    # Host platforms that cross-build this Android package (not the Android ABI).
+    platforms = [
+      "x86_64-linux"
+      "aarch64-linux"
+      "x86_64-darwin"
+      "aarch64-darwin"
+    ];
   };
 }
