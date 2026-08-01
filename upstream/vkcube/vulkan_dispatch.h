@@ -57,6 +57,7 @@ static PFN_vkGetDeviceProcAddr wwn_vkGetDeviceProcAddr;
   X(vkCreateImageView) \
   X(vkCreateFramebuffer) \
   X(vkAllocateCommandBuffers) \
+  X(vkFreeCommandBuffers) \
   X(vkCreateFence) \
   X(vkWaitForFences) \
   X(vkResetFences) \
@@ -211,6 +212,7 @@ static void wwn_vkcube_close_dispatch(void) {
 #define vkCreateImageView wwn_vkCreateImageView
 #define vkCreateFramebuffer wwn_vkCreateFramebuffer
 #define vkAllocateCommandBuffers wwn_vkAllocateCommandBuffers
+#define vkFreeCommandBuffers wwn_vkFreeCommandBuffers
 #define vkCreateFence wwn_vkCreateFence
 #define vkWaitForFences wwn_vkWaitForFences
 #define vkResetFences wwn_vkResetFences
