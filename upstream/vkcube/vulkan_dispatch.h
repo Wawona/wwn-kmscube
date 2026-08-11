@@ -10,7 +10,14 @@
 #include <TargetConditionals.h>
 #endif
 
-#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_OSX)
+/* The iOS *Simulator* also uses runtime dispatch: MoltenVK is still
+ * force-loaded, but on the headless CI simulator its Metal pipeline bring-up
+ * fatally aborts the whole app (Metal domain 102). Loading the bundled
+ * SwiftShader CPU ICD by dlopen (WWN_VULKAN_LIBRARY) instead means Metal is
+ * never engaged, so vkcube renders on the CPU and survives. On-device iOS keeps
+ * the static MoltenVK path (TARGET_OS_SIMULATOR is 0 there). */
+#if defined(__ANDROID__) \
+    || (defined(__APPLE__) && (TARGET_OS_OSX || TARGET_OS_SIMULATOR))
 #define WWN_VKCUBE_RUNTIME_DISPATCH 1
 #endif
 
