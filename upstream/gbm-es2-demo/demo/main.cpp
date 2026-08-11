@@ -26,6 +26,10 @@
 #include <getopt.h>
 #include <string>
 
+#ifdef WWN_ILAND_EMBEDDED
+#include <unistd.h>
+#endif
+
 #include "gbm_es2_demo.h"
 
 static const char* shortopts = "AD:M";
@@ -52,6 +56,30 @@ extern "C" int gbm_es2_demo_main(int argc, char* argv[]) {
   bool atomic = false;
   bool map = false;
   int opt;
+
+#ifdef WWN_ILAND_EMBEDDED
+  /* Embedded in the Wawona host, fd 0 is the app's stdin. On Android that is an
+   * EOF/closed descriptor, so Run()'s select(fd 0) fires immediately and the
+   * demo takes its interactive-exit path after a single frame, then crashes in
+   * the software-GPU driver's teardown. A native Linux run has a TTY stdin with
+   * no pending keypress, so select() blocks and the cube renders continuously.
+   * Reproduce that platform behaviour (a POSIX/stdin substitution, not a client
+   * change): point fd 0 at the read end of an empty pipe whose write end we keep
+   * open, so stdin never signals readable/EOF and the demo runs until the host
+   * tears it down — identical observable behaviour to upstream with no input.
+   * iOS/macOS already block on stdin, so this is a no-op safety net there. #140 */
+  {
+    int sp[2];
+    if (pipe(sp) == 0) {
+      if (sp[0] != 0) {
+        dup2(sp[0], 0);
+        close(sp[0]);
+      }
+      /* Intentionally keep sp[1] open for the client's lifetime: closing it
+       * would make the read end report EOF and reintroduce the early exit. */
+    }
+  }
+#endif
 
   optind = 1;
   while ((opt = getopt_long_only(argc, argv, shortopts, longopts, nullptr)) !=
