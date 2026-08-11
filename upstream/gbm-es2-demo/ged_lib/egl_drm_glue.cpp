@@ -218,14 +218,26 @@ class EGLDRMGlue::Impl : public DRMModesetter::Client {
   void operator=(const Impl&) = delete;
 
   ~Impl() override {
-    /* destroy framebuffers */
+    /* destroy framebuffers — guard every handle. When Initialize() fails partway
+     * (e.g. a software-GPU host without dma_buf import returns no EGLImage), the
+     * framebuffers_ entries are only partially populated; blindly calling
+     * DestroyImageKHR/close/gbm_bo_destroy on zero/garbage handles SIGSEGVs, and
+     * in the in-process Wawona host that segfault takes the whole app down
+     * (cascading every later client). Tearing down only valid handles lets a
+     * failed init unwind cleanly so the host survives. */
     for (auto& framebuffer : framebuffers_) {
-      glDeleteFramebuffers(1, &framebuffer.gl_fb);
-      glDeleteTextures(1, &framebuffer.gl_tex);
-      egl_.DestroyImageKHR(egl_.display, framebuffer.image);
-      drmModeRmFB(drm_->GetFD(), framebuffer.fb_id);
-      close(framebuffer.fd);
-      gbm_bo_destroy(framebuffer.bo);
+      if (framebuffer.gl_fb)
+        glDeleteFramebuffers(1, &framebuffer.gl_fb);
+      if (framebuffer.gl_tex)
+        glDeleteTextures(1, &framebuffer.gl_tex);
+      if (egl_.DestroyImageKHR && framebuffer.image)
+        egl_.DestroyImageKHR(egl_.display, framebuffer.image);
+      if (drm_ && framebuffer.fb_id)
+        drmModeRmFB(drm_->GetFD(), framebuffer.fb_id);
+      if (framebuffer.fd > 0)
+        close(framebuffer.fd);
+      if (framebuffer.bo)
+        gbm_bo_destroy(framebuffer.bo);
     }
 
     if (egl_.context)
@@ -400,11 +412,15 @@ class EGLDRMGlue::Impl : public DRMModesetter::Client {
 
   struct Framebuffer {
     struct gbm_bo* bo = nullptr;
-    int fd;
-    uint32_t fb_id;
-    EGLImageKHR image;
-    GLuint gl_tex;
-    GLuint gl_fb;
+    // Zero-initialize every handle so a partially-failed CreateFramebuffer
+    // leaves the destructor safe values to guard on (see ~Impl): an
+    // uninitialized image/fd/fb_id was what SIGSEGV'd the in-process host on a
+    // software-GPU target without dma_buf import.
+    int fd = -1;
+    uint32_t fb_id = 0;
+    EGLImageKHR image = EGL_NO_IMAGE_KHR;
+    GLuint gl_tex = 0;
+    GLuint gl_fb = 0;
   };
 
   bool CreateFramebuffer(int width, int height, Framebuffer& framebuffer) {
