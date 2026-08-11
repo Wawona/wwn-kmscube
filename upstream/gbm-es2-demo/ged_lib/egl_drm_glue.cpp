@@ -158,6 +158,9 @@ class StreamTextureImpl : public StreamTexture {
 
     dimension_.stride = gbm_bo_get_stride(bo_);
     EGLint offset = 0;
+    // See CreateFramebuffer: pass the modifier so out-of-band buffers (iland
+    // IOSurface) resolve when the plane0 fd is a placeholder.
+    uint64_t modifier = gbm_bo_get_modifier(bo_);
     const EGLint khr_image_attrs[] = {EGL_DMA_BUF_PLANE0_FD_EXT,
                                       fd_,
                                       EGL_WIDTH,
@@ -170,6 +173,10 @@ class StreamTextureImpl : public StreamTexture {
                                       dimension_.stride,
                                       EGL_DMA_BUF_PLANE0_OFFSET_EXT,
                                       offset,
+                                      EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT,
+                                      static_cast<const int>(modifier & 0xffffffff),
+                                      EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT,
+                                      static_cast<const int>(modifier >> 32),
                                       EGL_NONE};
 
     image_ = egl_->CreateImageKHR(
@@ -221,8 +228,15 @@ class EGLDRMGlue::Impl : public DRMModesetter::Client {
       gbm_bo_destroy(framebuffer.bo);
     }
 
-    eglDestroyContext(egl_.display, egl_.context);
+    if (egl_.context)
+      eglDestroyContext(egl_.display, egl_.context);
+#ifndef WWN_ILAND_EMBEDDED
+    /* Embedded in the Wawona host (see gbm_es2_demo_compat.h): terminating the
+     * shared ANGLE display here would tear it out from under the compositor and
+     * other in-process clients — and a failed init reaching this destructor
+     * used to abort the whole app. Leave the process-wide display alive. */
     eglTerminate(egl_.display);
+#endif
 
     gbm_device_destroy(gbm_);
   }
@@ -417,6 +431,10 @@ class EGLDRMGlue::Impl : public DRMModesetter::Client {
       return false;
     }
 
+    // The plane0 fd is a placeholder on platforms that transfer buffers
+    // out-of-band (iland: IOSurface); the modifier carries the real buffer
+    // identity, so always pass it through so the import can resolve the buffer.
+    uint64_t modifier = gbm_bo_get_modifier(framebuffer.bo);
     const EGLint khr_image_attrs[] = {EGL_DMA_BUF_PLANE0_FD_EXT,
                                       framebuffer.fd,
                                       EGL_WIDTH,
@@ -429,6 +447,10 @@ class EGLDRMGlue::Impl : public DRMModesetter::Client {
                                       static_cast<const int>(stride),
                                       EGL_DMA_BUF_PLANE0_OFFSET_EXT,
                                       static_cast<const int>(offset),
+                                      EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT,
+                                      static_cast<const int>(modifier & 0xffffffff),
+                                      EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT,
+                                      static_cast<const int>(modifier >> 32),
                                       EGL_NONE};
 
     framebuffer.image =

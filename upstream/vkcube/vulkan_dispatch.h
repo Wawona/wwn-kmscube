@@ -19,6 +19,7 @@
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static void *wwn_vk_library;
 static PFN_vkGetInstanceProcAddr wwn_vkGetInstanceProcAddr;
@@ -108,13 +109,73 @@ WWN_VK_DEVICE_FUNCTIONS(WWN_DECLARE_VK)
 #define WWN_VKCUBE_PROVIDER_FALLBACK "libMoltenVK.dylib"
 #endif
 
-static const char *wwn_vkcube_provider_path(void) {
-  const char *icd = getenv(WWN_VKCUBE_PROVIDER_ENV);
-  return icd && icd[0] ? icd : WWN_VKCUBE_PROVIDER_FALLBACK;
+#ifndef WWN_VKCUBE_PROVIDER_FALLBACKS_ENV
+#if defined(__ANDROID__)
+#define WWN_VKCUBE_PROVIDER_FALLBACKS_ENV "WWN_SWIFTSHADER_LIBRARY_FALLBACKS"
+#else
+#define WWN_VKCUBE_PROVIDER_FALLBACKS_ENV "WWN_VULKAN_LIBRARY_FALLBACKS"
+#endif
+#endif
+
+/*
+ * Ordered Vulkan provider (ICD) list. There is no Vulkan loader in the app
+ * bundle, so vkcube emulates the loader's multi-ICD behaviour itself: try the
+ * Settings-selected ICD first (WWN_VULKAN_LIBRARY), then WWNSettings'
+ * colon-separated fallbacks (WWN_VULKAN_LIBRARY_FALLBACKS = hardware MoltenVK,
+ * then the SwiftShader CPU device), then the compile-time default. This is what
+ * lets vkcube run on a headless CI VM / Simulator whose selected driver (e.g.
+ * KosmicKrisp) loads yet enumerates no physical device: init_vulkan advances to
+ * the next provider until one yields a device.
+ */
+enum { WWN_VKCUBE_MAX_PROVIDERS = 8 };
+
+static int wwn_vkcube_provider_at(int index, const char **out) {
+  static char slots[WWN_VKCUBE_MAX_PROVIDERS][512];
+  static int count = -1;
+  if (count < 0) {
+    count = 0;
+    const char *sel = getenv(WWN_VKCUBE_PROVIDER_ENV);
+    if (sel && sel[0]) {
+      snprintf(slots[count], sizeof(slots[0]), "%s", sel);
+      count++;
+    }
+    const char *fb = getenv(WWN_VKCUBE_PROVIDER_FALLBACKS_ENV);
+    if (fb && fb[0]) {
+      static char scratch[2048];
+      snprintf(scratch, sizeof(scratch), "%s", fb);
+      char *save = NULL;
+      for (char *tok = strtok_r(scratch, ":", &save);
+           tok && count < WWN_VKCUBE_MAX_PROVIDERS;
+           tok = strtok_r(NULL, ":", &save)) {
+        if (tok[0]) {
+          snprintf(slots[count], sizeof(slots[0]), "%s", tok);
+          count++;
+        }
+      }
+    }
+    if (count < WWN_VKCUBE_MAX_PROVIDERS) {
+      snprintf(slots[count], sizeof(slots[0]), "%s", WWN_VKCUBE_PROVIDER_FALLBACK);
+      count++;
+    }
+  }
+  if (index < 0 || index >= count)
+    return 0;
+  *out = slots[index];
+  return 1;
 }
 
-static int wwn_vkcube_load_global_dispatch(void) {
-  const char *path = wwn_vkcube_provider_path();
+static int wwn_vkcube_provider_count(void) {
+  const char *p;
+  int i = 0;
+  while (wwn_vkcube_provider_at(i, &p))
+    i++;
+  return i;
+}
+
+/* Load the global Vulkan dispatch from a specific provider path. Returns 0 on
+ * success. Caller iterates providers (init_vulkan) and calls
+ * wwn_vkcube_close_dispatch between attempts. */
+static int wwn_vkcube_load_global_dispatch_path(const char *path) {
   wwn_vk_library = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (!wwn_vk_library) {
     fprintf(stderr, "vkcube: cannot load Vulkan provider %s: %s\n", path,
@@ -132,13 +193,7 @@ static int wwn_vkcube_load_global_dispatch(void) {
     fprintf(stderr, "vkcube: %s has no vkGetInstanceProcAddr\n", path);
     return -1;
   }
-  /* Name the provider on success too. Driver selection is otherwise invisible:
-   * a MoltenVK run and a KosmicKrisp run produce byte-identical output, so
-   * acceptance cannot tell whether the Settings choice was honored or whether
-   * the fallback silently served every run. */
-  const char *selected = getenv(WWN_VKCUBE_PROVIDER_ENV);
-  fprintf(stderr, "vkcube: Vulkan provider %s (%s)\n", path,
-          (selected && selected[0]) ? "selected" : "default fallback");
+  fprintf(stderr, "vkcube: Vulkan provider %s\n", path);
 #define WWN_LOAD_GLOBAL(name) \
   wwn_##name = (PFN_##name)wwn_vkGetInstanceProcAddr(VK_NULL_HANDLE, #name); \
   if (!wwn_##name) { \
@@ -148,6 +203,14 @@ static int wwn_vkcube_load_global_dispatch(void) {
   WWN_VK_GLOBAL_FUNCTIONS(WWN_LOAD_GLOBAL)
 #undef WWN_LOAD_GLOBAL
   return 0;
+}
+
+/* Backwards-compatible single-provider entry (first provider only). */
+static int wwn_vkcube_load_global_dispatch(void) {
+  const char *path = NULL;
+  if (!wwn_vkcube_provider_at(0, &path))
+    path = WWN_VKCUBE_PROVIDER_FALLBACK;
+  return wwn_vkcube_load_global_dispatch_path(path);
 }
 
 static int wwn_vkcube_load_instance_dispatch(VkInstance instance) {
@@ -247,6 +310,10 @@ static void wwn_vkcube_close_dispatch(void) {
 
 #else /* statically linked provider (Apple mobile) */
 
+/* Apple mobile links one ICD (MoltenVK) statically: a single implicit provider,
+ * no dlopen, no fallback list. The provider-loop shape in init_vulkan still
+ * compiles against these no-ops. */
+static int wwn_vkcube_provider_count(void) { return 1; }
 static int wwn_vkcube_load_global_dispatch(void) { return 0; }
 static int wwn_vkcube_load_instance_dispatch(VkInstance instance) {
   (void)instance;

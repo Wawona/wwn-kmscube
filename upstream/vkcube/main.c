@@ -401,9 +401,13 @@ static int init_wayland(struct app *app) {
   return 0;
 }
 
-static int init_vulkan(struct app *app) {
-  if (wwn_vkcube_load_global_dispatch() != 0)
-    return -1;
+/* Bring up a Vulkan instance and pick a physical device using whichever
+ * provider's global dispatch is currently loaded. Returns 0 (and sets
+ * app->instance + app->physical_device) when this provider yields at least one
+ * device; returns -1 as a *soft* failure so init_vulkan can try the next
+ * provider. Leaves app->instance = VK_NULL_HANDLE on a create failure so the
+ * caller only ever destroys a real handle. */
+static int wwn_vkcube_bringup_instance_and_gpu(struct app *app) {
   const bool portability =
       has_instance_extension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
   const char *instance_extensions[] = {
@@ -424,26 +428,68 @@ static int init_vulkan(struct app *app) {
       .enabledExtensionCount = portability ? 1u : 0u,
       .ppEnabledExtensionNames = portability ? instance_extensions : NULL,
   };
-  VK_CHECK(vkCreateInstance(&instance_info, NULL, &app->instance));
+  if (vkCreateInstance(&instance_info, NULL, &app->instance) != VK_SUCCESS) {
+    app->instance = VK_NULL_HANDLE;
+    return -1;
+  }
   if (wwn_vkcube_load_instance_dispatch(app->instance) != 0)
     return -1;
 
   uint32_t physical_count = 0;
-  VK_CHECK(vkEnumeratePhysicalDevices(app->instance, &physical_count, NULL));
-  if (physical_count == 0)
-    return fprintf(stderr, "vkcube: no Vulkan physical device\n"), -1;
-  VkPhysicalDevice *physical_devices = calloc(physical_count, sizeof(*physical_devices));
+  if (vkEnumeratePhysicalDevices(app->instance, &physical_count, NULL) !=
+          VK_SUCCESS ||
+      physical_count == 0)
+    return -1;
+  VkPhysicalDevice *physical_devices =
+      calloc(physical_count, sizeof(*physical_devices));
   if (!physical_devices)
     return -1;
-  VkResult result =
-      vkEnumeratePhysicalDevices(app->instance, &physical_count, physical_devices);
-  if (result != VK_SUCCESS) {
+  if (vkEnumeratePhysicalDevices(app->instance, &physical_count,
+                                 physical_devices) != VK_SUCCESS) {
     free(physical_devices);
-    return vk_error(result, "vkEnumeratePhysicalDevices");
+    return -1;
   }
   app->physical_device = physical_devices[0];
   free(physical_devices);
-  vkGetPhysicalDeviceMemoryProperties(app->physical_device, &app->memory_properties);
+  vkGetPhysicalDeviceMemoryProperties(app->physical_device,
+                                      &app->memory_properties);
+  return 0;
+}
+
+static int init_vulkan(struct app *app) {
+  // Try each Vulkan provider in order (selected ICD -> MoltenVK -> SwiftShader
+  // on macOS; single static MoltenVK on Apple mobile) until one enumerates a
+  // physical device. A headless CI VM / Simulator can load the selected driver
+  // yet find no device — advancing to the next provider is what keeps vkcube
+  // running there without a real GPU.
+  int providers = wwn_vkcube_provider_count();
+  int ok = 0;
+  for (int i = 0; i < providers; i++) {
+    if (i > 0)
+      wwn_vkcube_close_dispatch();
+#ifdef WWN_VKCUBE_RUNTIME_DISPATCH
+    const char *ppath = NULL;
+    if (!wwn_vkcube_provider_at(i, &ppath))
+      break;
+    if (wwn_vkcube_load_global_dispatch_path(ppath) != 0)
+      continue;
+#else
+    if (wwn_vkcube_load_global_dispatch() != 0)
+      return -1;
+#endif
+    if (wwn_vkcube_bringup_instance_and_gpu(app) == 0) {
+      ok = 1;
+      break;
+    }
+    if (app->instance != VK_NULL_HANDLE) {
+      vkDestroyInstance(app->instance, NULL);
+      app->instance = VK_NULL_HANDLE;
+    }
+  }
+  if (!ok)
+    return fprintf(stderr,
+                   "vkcube: no Vulkan physical device from any provider\n"),
+           -1;
 
   uint32_t family_count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(app->physical_device, &family_count, NULL);
