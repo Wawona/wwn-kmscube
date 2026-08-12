@@ -47,14 +47,24 @@ class DRMModesetter::Impl {
   ~Impl() {
     assert(!page_flip_pending_);
     for (auto& dev : modeset_dev_list_) {
-      /* restore saved CRTC configuration */
-      drmModeSetCrtc(fd_, dev->saved_crtc->crtc_id, dev->saved_crtc->buffer_id,
-                     dev->saved_crtc->x, dev->saved_crtc->y, &dev->conn, 1,
-                     &dev->saved_crtc->mode);
-      drmModeFreeCrtc(dev->saved_crtc);
+      /* restore saved CRTC configuration — only if ModeSetCrtc ran.
+       * A failed EGL/GBM bring-up tears down Impl with saved_crtc still
+       * null; dereferencing it aborted the whole in-process Wawona host
+       * (EXC_BAD_ACCESS at address 0). */
+      if (dev->saved_crtc) {
+        drmModeSetCrtc(fd_, dev->saved_crtc->crtc_id,
+                       dev->saved_crtc->buffer_id, dev->saved_crtc->x,
+                       dev->saved_crtc->y, &dev->conn, 1,
+                       &dev->saved_crtc->mode);
+        drmModeFreeCrtc(dev->saved_crtc);
+        dev->saved_crtc = nullptr;
+      }
     }
 
-    close(fd_);
+    if (fd_ >= 0) {
+      close(fd_);
+      fd_ = -1;
+    }
   }
 
   void SetClient(DRMModesetter::Client* client) { client_ = client; }
@@ -285,6 +295,13 @@ class DRMModesetter::Impl {
 
     /* free resources again */
     drmModeFreeResources(res);
+    /* Upstream returned true even with an empty device list, which left
+     * modeset_dev_ null and made later ModeSetCrtc/GetDisplaySize assert or
+     * fault. Treat "no usable connector" as init failure. */
+    if (modeset_dev_list_.empty()) {
+      fprintf(stderr, "no connected DRM connector with a usable mode\n");
+      return false;
+    }
     return true;
   }
 
