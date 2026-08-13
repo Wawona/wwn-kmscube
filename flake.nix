@@ -5,12 +5,12 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
-    wwn-toolchain.url = "github:Wawona/wwn-toolchain/development";
+    wwn-toolchain.url = "https://flakehub.com/f/Wawona/wwn-toolchain/*";
     wwn-toolchain.inputs.nixpkgs.follows = "nixpkgs";
     wwn-toolchain.inputs.rust-overlay.follows = "rust-overlay";
-    # L2 -> L1 edge; see Wawona/docs/wwn-repo-dag.md. Track development so
-    # this leaf consumes the L1-owned MoltenVK/SwiftShader provider registry.
-    wwn-iland.url = "github:Wawona/wwn-iland/development";
+    # L2 -> L1 edge; see Wawona/docs/wwn-repo-dag.md. FlakeHub rolling follows
+    # the published L1 tip (MoltenVK/SwiftShader provider registry).
+    wwn-iland.url = "https://flakehub.com/f/Wawona/wwn-iland/*";
     wwn-iland.inputs.nixpkgs.follows = "nixpkgs";
     wwn-iland.inputs.wwn-toolchain.follows = "wwn-toolchain";
   };
