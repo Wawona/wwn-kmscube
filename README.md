@@ -1,5 +1,7 @@
 # wwn-kmscube
 
+[![CI](https://github.com/Wawona/wwn-kmscube/actions/workflows/ci.yml/badge.svg)](https://github.com/Wawona/wwn-kmscube/actions/workflows/ci.yml)
+
 Wawona's native graphics acceptance clients: the canonical
 [kmscube](https://gitlab.freedesktop.org/mesa/kmscube) GBM/EGL/DRM GL client and
 an iland-portable adaptation of [krh/vkcube](https://github.com/krh/vkcube).
