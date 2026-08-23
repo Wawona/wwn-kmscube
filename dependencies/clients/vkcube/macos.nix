@@ -69,8 +69,12 @@ pkgs.stdenv.mkDerivation {
     # Own-display KMS/GBM path (Mode B Classic, or Mode A Display Backend=DRM).
     # Separate binary: do not merge with the Wayland client. Nested Machines
     # Start still launches bin/vkcube against WAYLAND_DISPLAY.
+    # Force-include the store-safe /dev/dri/cardN redirect (same as kmscube).
+    # Raw open("/dev/dri/card0") is ENOENT on Apple; Mode B overlay children
+    # of igettyd do not get a Dobby open() hook.
     echo "CC vkcube-kms (standalone KMS/GBM binary)"
-    "$CLANG" $CFLAGS vkcube_kms.c -lm \
+    "$CLANG" $CFLAGS -include ${iland}/include/iland_drm_open_compat.h \
+      vkcube_kms.c -lm \
       -L${iland}/lib -liland_userland $FRAMEWORKS -o vkcube_kms_bin
 
     runHook postBuild
