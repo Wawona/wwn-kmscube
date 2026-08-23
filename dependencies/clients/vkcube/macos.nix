@@ -1,6 +1,7 @@
-# Native, in-process krh/vkcube for macOS — Wayland client over iland's
-# IOSurface dmabuf winsys (not the iland KMS host). Resolves Vulkan against
-# MoltenVK or KosmicKrisp at runtime via WWN_VULKAN_LIBRARY.
+# Native krh/vkcube for macOS. Two binaries, two presentation paths:
+#   vkcube     Wayland client over iland IOSurface dmabuf (nested / Mode A)
+#   vkcube-kms iland KMS/GBM own-display (Mode B Classic, or Display Backend=DRM)
+# Resolves Vulkan against MoltenVK or KosmicKrisp via WWN_VULKAN_LIBRARY.
 {
   lib,
   pkgs,
@@ -61,9 +62,16 @@ pkgs.stdenv.mkDerivation {
     "$CLANG" -c $CFLAGS xdg-shell-protocol.c -o xdg-shell-protocol.o
     ar rcs libvkcube.a vkcube_main.o xdg-shell-protocol.o
 
-    echo "CC vkcube (standalone binary)"
+    echo "CC vkcube (standalone Wayland binary)"
     "$CLANG" $CFLAGS main.c xdg-shell-protocol.c $LIBS $FRAMEWORKS \
       -Wl,-rpath,${libwayland}/lib -o vkcube_bin
+
+    # Own-display KMS/GBM path (Mode B Classic, or Mode A Display Backend=DRM).
+    # Separate binary: do not merge with the Wayland client. Nested Machines
+    # Start still launches bin/vkcube against WAYLAND_DISPLAY.
+    echo "CC vkcube-kms (standalone KMS/GBM binary)"
+    "$CLANG" $CFLAGS vkcube_kms.c -lm \
+      -L${iland}/lib -liland_userland $FRAMEWORKS -o vkcube_kms_bin
 
     runHook postBuild
   '';
@@ -71,13 +79,14 @@ pkgs.stdenv.mkDerivation {
   installPhase = ''
     mkdir -p "$out/bin" "$out/lib" "$out/include" "$out/nix-support"
     install -m755 vkcube_bin "$out/bin/vkcube"
+    install -m755 vkcube_kms_bin "$out/bin/vkcube-kms"
     install -m644 libvkcube.a "$out/lib/"
     cat > "$out/include/vkcube.h" <<'EOF'
-    #ifndef WAWONA_VKCUBE_H
-    #define WAWONA_VKCUBE_H
-    int vkcube_main(int argc, char *argv[]);
-    #endif
-    EOF
+#ifndef WAWONA_VKCUBE_H
+#define WAWONA_VKCUBE_H
+int vkcube_main(int argc, char *argv[]);
+#endif
+EOF
     echo "${iland}" > "$out/nix-support/iland-path"
     echo "${libwayland}" > "$out/nix-support/libwayland-path"
     printf '%s\n' moltenvk kosmickrisp \
@@ -87,6 +96,7 @@ pkgs.stdenv.mkDerivation {
       "upstream": "krh/vkcube",
       "revision": "ffd566971fac916fc90d33a442369d5717ceb2a9",
       "presentation": "wayland-iosurface-dmabuf",
+      "kmsBinary": "vkcube-kms",
       "defaultVulkanProvider": "moltenvk",
       "compatibleVulkanProviders": ["moltenvk", "kosmickrisp"],
       "translationLayers": []
@@ -95,7 +105,7 @@ pkgs.stdenv.mkDerivation {
   '';
 
   meta = with lib; {
-    description = "Native in-process Vulkan cube over Wayland IOSurface dmabuf for macOS";
+    description = "Native Vulkan cube: Wayland (vkcube) and iland KMS/GBM (vkcube-kms) for macOS";
     homepage = "https://github.com/krh/vkcube";
     license = licenses.mit;
     platforms = platforms.darwin;

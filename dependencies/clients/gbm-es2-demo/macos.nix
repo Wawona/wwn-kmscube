@@ -80,6 +80,7 @@ $CLANGXX -c $CXXFLAGS "$src" -o "$obj"
   installPhase = ''
     mkdir -p $out/bin $out/lib $out/include $out/nix-support
     cp gbm_es2_demo $out/bin/
+    ln -s gbm_es2_demo $out/bin/gbm-es2-demo
     cp libgbm_es2_demo.a $out/lib/
     cat > $out/include/gbm_es2_demo.h <<'EOF'
 #ifndef WAWONA_GBM_ES2_DEMO_H
