@@ -25,6 +25,8 @@ pkgs.stdenv.mkDerivation {
   nativeBuildInputs = [ pkgs.wayland-scanner ];
   buildPhase = ''
     runHook preBuild
+    cp ${../../../upstream/wwn_cube_hud.c} wwn_cube_hud.c
+    cp ${../../../upstream/wwn_cube_hud.h} wwn_cube_hud.h
     CC="${androidToolchain.androidCC}"
     AR="${androidToolchain.androidAR}"
 

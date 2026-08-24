@@ -26,6 +26,9 @@ pkgs.stdenv.mkDerivation {
   buildPhase = ''
     runHook preBuild
 
+    cp ${../../../upstream/wwn_cube_hud.c} wwn_cube_hud.c
+    cp ${../../../upstream/wwn_cube_hud.h} wwn_cube_hud.h
+
     CXX="${androidToolchain.androidCXX}"
     AR="${androidToolchain.androidAR}"
 

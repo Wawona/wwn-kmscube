@@ -50,6 +50,8 @@
 #include "iland_wl_winsys.h"
 
 #include "vulkan_dispatch.h"
+#include "wwn_cube_hud.h"
+#include "wwn_cube_hud.c"
 
 #ifndef VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR
 #define VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR 0x00000001
@@ -127,6 +129,8 @@ struct app {
   VkDescriptorSet descriptor_set;
   struct buffer buffers[BUFFER_COUNT];
 };
+
+static struct wwn_cube_hud g_hud;
 
 static const uint32_t vertex_spirv[] = {
 #include "vkcube.vert.spv.h"
@@ -535,6 +539,13 @@ static int init_vulkan(struct app *app) {
       .queueFamilyIndex = app->queue_family,
   };
   VK_CHECK(vkCreateCommandPool(app->device, &pool_info, NULL, &app->command_pool));
+
+  VkPhysicalDeviceProperties props;
+  memset(&props, 0, sizeof(props));
+  vkGetPhysicalDeviceProperties(app->physical_device, &props);
+  wwn_cube_hud_init(&g_hud);
+  wwn_cube_hud_set_vk(&g_hud, wwn_vkcube_loaded_provider_path(),
+                      props.deviceName);
   return 0;
 }
 
@@ -1005,6 +1016,10 @@ static int render_frame(struct app *app, struct buffer *buffer, uint32_t frame) 
   };
   VK_CHECK(vkQueueSubmit(app->queue, 1, &submit, buffer->fence));
   VK_CHECK(vkWaitForFences(app->device, 1, &buffer->fence, VK_TRUE, UINT64_MAX));
+
+  wwn_cube_hud_tick(&g_hud);
+  wwn_cube_hud_blit_rgba(buffer->staging_map, (int)app->width, (int)app->height,
+                         (int)app->width * 4, &g_hud, 1);
 
   if (iland_wl_swapchain_present_pixels(app->swapchain, buffer->staging_map,
                                          app->width * 4u) != 0)

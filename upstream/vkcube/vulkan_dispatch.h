@@ -29,6 +29,7 @@
 #include <string.h>
 
 static void *wwn_vk_library;
+static char wwn_vk_loaded_path[512];
 static PFN_vkGetInstanceProcAddr wwn_vkGetInstanceProcAddr;
 static PFN_vkGetDeviceProcAddr wwn_vkGetDeviceProcAddr;
 
@@ -37,6 +38,7 @@ static PFN_vkGetDeviceProcAddr wwn_vkGetDeviceProcAddr;
   X(vkCreateInstance)
 #define WWN_VK_INSTANCE_FUNCTIONS(X) \
   X(vkEnumeratePhysicalDevices) \
+  X(vkGetPhysicalDeviceProperties) \
   X(vkGetPhysicalDeviceMemoryProperties) \
   X(vkGetPhysicalDeviceQueueFamilyProperties) \
   X(vkEnumerateDeviceExtensionProperties) \
@@ -200,6 +202,7 @@ static int wwn_vkcube_load_global_dispatch_path(const char *path) {
     fprintf(stderr, "vkcube: %s has no vkGetInstanceProcAddr\n", path);
     return -1;
   }
+    snprintf(wwn_vk_loaded_path, sizeof(wwn_vk_loaded_path), "%s", path);
   fprintf(stderr, "vkcube: Vulkan provider %s\n", path);
 #define WWN_LOAD_GLOBAL(name) \
   wwn_##name = (PFN_##name)wwn_vkGetInstanceProcAddr(VK_NULL_HANDLE, #name); \
@@ -250,11 +253,17 @@ static void wwn_vkcube_close_dispatch(void) {
   if (wwn_vk_library)
     dlclose(wwn_vk_library);
   wwn_vk_library = NULL;
+  wwn_vk_loaded_path[0] = 0;
+}
+
+static const char *wwn_vkcube_loaded_provider_path(void) {
+  return wwn_vk_loaded_path[0] ? wwn_vk_loaded_path : NULL;
 }
 
 #define vkEnumerateInstanceExtensionProperties wwn_vkEnumerateInstanceExtensionProperties
 #define vkCreateInstance wwn_vkCreateInstance
 #define vkEnumeratePhysicalDevices wwn_vkEnumeratePhysicalDevices
+#define vkGetPhysicalDeviceProperties wwn_vkGetPhysicalDeviceProperties
 #define vkGetPhysicalDeviceMemoryProperties wwn_vkGetPhysicalDeviceMemoryProperties
 #define vkGetPhysicalDeviceQueueFamilyProperties wwn_vkGetPhysicalDeviceQueueFamilyProperties
 #define vkEnumerateDeviceExtensionProperties wwn_vkEnumerateDeviceExtensionProperties
@@ -331,5 +340,7 @@ static int wwn_vkcube_load_device_dispatch(VkDevice device) {
   return 0;
 }
 static void wwn_vkcube_close_dispatch(void) {}
+
+static const char *wwn_vkcube_loaded_provider_path(void) { return "MoltenVK"; }
 
 #endif

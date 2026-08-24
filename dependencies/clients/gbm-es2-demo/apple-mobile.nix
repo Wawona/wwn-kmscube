@@ -32,6 +32,9 @@ pkgs.stdenv.mkDerivation {
   buildPhase = ''
     runHook preBuild
 
+    cp ${../../../upstream/wwn_cube_hud.c} wwn_cube_hud.c
+    cp ${../../../upstream/wwn_cube_hud.h} wwn_cube_hud.h
+
     if [ -z "''${XCODE_APP:-}" ]; then
       XCODE_APP=$(${xcodeUtils.findXcodeScript}/bin/find-xcode || true)
       [ -n "$XCODE_APP" ] && export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"

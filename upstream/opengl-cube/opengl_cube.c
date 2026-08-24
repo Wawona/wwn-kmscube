@@ -47,6 +47,10 @@
 
 #include "matrix.h"
 
+#define WWN_CUBE_HUD_GL 1
+#include "../wwn_cube_hud.h"
+#include "../wwn_cube_hud.c"
+
 /* Provided by wwn-iland's EGL shim. Declared rather than pulled from a vendor
  * EGL header so the client does not depend on which extension headers ANGLE
  * happens to install. */
@@ -89,6 +93,8 @@ static struct {
 	.width = DEFAULT_WIDTH,
 	.height = DEFAULT_HEIGHT,
 };
+
+static struct wwn_cube_hud g_hud;
 
 /* ------------------------------------------------------------------ *
  * Wayland host
@@ -342,6 +348,12 @@ static int init_egl(void)
 
 	printf("opengl-cube: GL_RENDERER \"%s\"\n", glGetString(GL_RENDERER));
 
+	wwn_cube_hud_init(&g_hud);
+	g_hud.kms = 0;
+	g_hud.drm = 0;
+	g_hud.gbm = 0;
+	wwn_cube_hud_fill_gl(&g_hud);
+
 	/* A config with EGL_DEPTH_SIZE does not guarantee the surface got a depth
 	 * attachment, and without one GL_DEPTH_TEST silently does nothing and the
 	 * cube's far faces draw over its near ones. Say so rather than let it look
@@ -574,6 +586,9 @@ static void render(void)
 
 	glBindVertexArray(gl.vao);
 	glDrawElements(GL_TRIANGLES, triangles * 3, GL_UNSIGNED_SHORT, NULL);
+
+	wwn_cube_hud_tick(&g_hud);
+	wwn_cube_hud_draw_gl(gl.width, gl.height, &g_hud);
 }
 
 /* ------------------------------------------------------------------ *

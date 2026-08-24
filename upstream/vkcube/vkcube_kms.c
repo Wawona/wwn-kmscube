@@ -53,6 +53,8 @@
 #include <xf86drmMode.h>
 
 #include "vulkan_dispatch.h"
+#include "wwn_cube_hud.h"
+#include "wwn_cube_hud.c"
 
 #ifndef VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR
 #define VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR 0x00000001
@@ -123,6 +125,8 @@ struct app {
   VkDescriptorSet descriptor_set;
   struct buffer buffers[BUFFER_COUNT];
 };
+
+static struct wwn_cube_hud g_hud;
 
 static const uint32_t vertex_spirv[] = {
 #include "vkcube.vert.spv.h"
@@ -325,31 +329,64 @@ static int init_kms(struct app *app) {
 }
 
 static int init_vulkan(struct app *app) {
-  if (wwn_vkcube_load_global_dispatch() != 0)
-    return -1;
-  const bool portability =
-      has_instance_extension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
-  const char *instance_extensions[] = {
-      VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
-  };
-  const VkApplicationInfo app_info = {
-      .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-      .pApplicationName = "vkcube",
-      .applicationVersion = VK_MAKE_VERSION(0, 1, 0),
-      .pEngineName = "wwn-iland-kms",
-      .engineVersion = VK_MAKE_VERSION(1, 0, 0),
-      .apiVersion = VK_API_VERSION_1_0,
-  };
-  const VkInstanceCreateInfo instance_info = {
-      .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-      .flags = portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0,
-      .pApplicationInfo = &app_info,
-      .enabledExtensionCount = portability ? 1u : 0u,
-      .ppEnabledExtensionNames = portability ? instance_extensions : NULL,
-  };
-  VK_CHECK(vkCreateInstance(&instance_info, NULL, &app->instance));
-  if (wwn_vkcube_load_instance_dispatch(app->instance) != 0)
-    return -1;
+  int providers = wwn_vkcube_provider_count();
+  int loaded = 0;
+  for (int i = 0; i < providers; i++) {
+    if (i > 0)
+      wwn_vkcube_close_dispatch();
+#ifdef WWN_VKCUBE_RUNTIME_DISPATCH
+    const char *ppath = NULL;
+    if (!wwn_vkcube_provider_at(i, &ppath))
+      break;
+    if (wwn_vkcube_load_global_dispatch_path(ppath) != 0)
+      continue;
+#else
+    if (wwn_vkcube_load_global_dispatch() != 0)
+      return -1;
+#endif
+    const bool portability =
+        has_instance_extension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+    const char *instance_extensions[] = {
+        VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
+    };
+    const VkApplicationInfo app_info = {
+        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pApplicationName = "vkcube",
+        .applicationVersion = VK_MAKE_VERSION(0, 1, 0),
+        .pEngineName = "wwn-iland-kms",
+        .engineVersion = VK_MAKE_VERSION(1, 0, 0),
+        .apiVersion = VK_API_VERSION_1_0,
+    };
+    const VkInstanceCreateInfo instance_info = {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .flags = portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0,
+        .pApplicationInfo = &app_info,
+        .enabledExtensionCount = portability ? 1u : 0u,
+        .ppEnabledExtensionNames = portability ? instance_extensions : NULL,
+    };
+    if (vkCreateInstance(&instance_info, NULL, &app->instance) != VK_SUCCESS) {
+      app->instance = VK_NULL_HANDLE;
+      continue;
+    }
+    if (wwn_vkcube_load_instance_dispatch(app->instance) != 0) {
+      vkDestroyInstance(app->instance, NULL);
+      app->instance = VK_NULL_HANDLE;
+      continue;
+    }
+    uint32_t physical_count = 0;
+    if (vkEnumeratePhysicalDevices(app->instance, &physical_count, NULL) !=
+            VK_SUCCESS ||
+        physical_count == 0) {
+      vkDestroyInstance(app->instance, NULL);
+      app->instance = VK_NULL_HANDLE;
+      continue;
+    }
+    loaded = 1;
+    break;
+  }
+  if (!loaded)
+    return fprintf(stderr, "vkcube: no Vulkan physical device from any provider\n"),
+           -1;
 
   uint32_t physical_count = 0;
   VK_CHECK(vkEnumeratePhysicalDevices(app->instance, &physical_count, NULL));
@@ -412,6 +449,16 @@ static int init_vulkan(struct app *app) {
       .queueFamilyIndex = app->queue_family,
   };
   VK_CHECK(vkCreateCommandPool(app->device, &pool_info, NULL, &app->command_pool));
+
+  VkPhysicalDeviceProperties props;
+  memset(&props, 0, sizeof(props));
+  vkGetPhysicalDeviceProperties(app->physical_device, &props);
+  wwn_cube_hud_init(&g_hud);
+  g_hud.kms = 1;
+  g_hud.drm = 1;
+  g_hud.gbm = 1;
+  wwn_cube_hud_set_vk(&g_hud, wwn_vkcube_loaded_provider_path(),
+                      props.deviceName);
   return 0;
 }
 
@@ -829,6 +876,10 @@ static int render_frame(struct app *app, struct buffer *buffer, uint32_t frame) 
   };
   VK_CHECK(vkQueueSubmit(app->queue, 1, &submit, buffer->fence));
   VK_CHECK(vkWaitForFences(app->device, 1, &buffer->fence, VK_TRUE, UINT64_MAX));
+
+  wwn_cube_hud_tick(&g_hud);
+  wwn_cube_hud_blit_rgba(buffer->staging_map, (int)app->width, (int)app->height,
+                         (int)app->width * 4, &g_hud, 1);
 
   const uint8_t *source = buffer->staging_map;
   if (buffer->stride == app->width * 4u) {

@@ -32,6 +32,15 @@
 #include "gbm_es2_demo.h"
 #include "matrix.h"
 
+#define WWN_CUBE_HUD_GL 1
+extern "C" {
+#include "../wwn_cube_hud.h"
+#include "../wwn_cube_hud.c"
+}
+
+static struct wwn_cube_hud g_hud;
+static int g_hud_ready;
+
 namespace demo {
 
 ES2CubeImpl::~ES2CubeImpl() {
@@ -305,6 +314,14 @@ bool ES2CubeImpl::InitializeGLProgram() {
   glDeleteShader(vertex_shader);
   glDeleteShader(fragment_shader);
   glUseProgram(program_);
+  if (!g_hud_ready) {
+    wwn_cube_hud_init(&g_hud);
+    g_hud.kms = 1;
+    g_hud.drm = 1;
+    g_hud.gbm = 1;
+    wwn_cube_hud_fill_gl(&g_hud);
+    g_hud_ready = 1;
+  }
   return true;
 }
 
@@ -364,6 +381,9 @@ void ES2CubeImpl::Draw(unsigned long usec) {
   glDrawArrays(GL_TRIANGLE_STRIP, 12, 4);
   glDrawArrays(GL_TRIANGLE_STRIP, 16, 4);
   glDrawArrays(GL_TRIANGLE_STRIP, 20, 4);
+
+  wwn_cube_hud_tick(&g_hud);
+  wwn_cube_hud_draw_gl(display_size_.width, display_size_.height, &g_hud);
 }
 
 }  // namespace demo

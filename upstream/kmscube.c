@@ -43,6 +43,10 @@
 
 #include "esUtil.h"
 
+#define WWN_CUBE_HUD_GL 1
+#include "wwn_cube_hud.h"
+#include "wwn_cube_hud.c"
+
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 #define MAX_DISPLAYS 	(4)
@@ -79,6 +83,8 @@ static struct {
 	drmModeModeInfo *mode[MAX_DISPLAYS];
 	drmModeConnector *connectors[MAX_DISPLAYS];
 } drm;
+
+static struct wwn_cube_hud g_hud;
 
 struct drm_fb {
 	struct gbm_bo *bo;
@@ -770,6 +776,10 @@ static void draw(uint32_t i)
 	glDrawArrays(GL_TRIANGLE_STRIP, 12, 4);
 	glDrawArrays(GL_TRIANGLE_STRIP, 16, 4);
 	glDrawArrays(GL_TRIANGLE_STRIP, 20, 4);
+
+	wwn_cube_hud_tick(&g_hud);
+	wwn_cube_hud_draw_gl(drm.mode[DISP_ID]->hdisplay,
+			     drm.mode[DISP_ID]->vdisplay, &g_hud);
 }
 
 static void
@@ -927,6 +937,12 @@ int main(int argc, char *argv[])
 	}
 
 	printf("init gl success!\n");
+
+	wwn_cube_hud_init(&g_hud);
+	g_hud.kms = 1;
+	g_hud.drm = 1;
+	g_hud.gbm = 1;
+	wwn_cube_hud_fill_gl(&g_hud);
 
 	/* clear the color buffer */
 	glClearColor(0.5, 0.5, 0.5, 1.0);

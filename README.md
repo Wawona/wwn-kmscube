@@ -50,6 +50,10 @@ must not bundle Vulkan.
 
 Sources live in `upstream/` (vendored from the iland kmscube test tree; `kmscube_compat.h` handles Apple EGL display typing).
 
+F7/F8/F9 Mode B overlay clients (kmscube, gbm-es2-demo, vkcube-kms) and the
+Wayland opengl-cube / vkcube clients draw a corner status hub: fps, kms/drm/gbm,
+OpenGL vs Vulkan, and the live backend (ANGLE, MoltenVK, KosmicKrisp).
+
 ## Use in a flake
 
 ```nix
