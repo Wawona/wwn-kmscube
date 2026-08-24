@@ -316,6 +316,7 @@ bool ES2CubeImpl::InitializeGLProgram() {
   glUseProgram(program_);
   if (!g_hud_ready) {
     wwn_cube_hud_init(&g_hud);
+    wwn_cube_hud_set_client(&g_hud, "gbm-es2-demo");
     g_hud.kms = 1;
     g_hud.drm = 1;
     g_hud.gbm = 1;

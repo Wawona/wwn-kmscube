@@ -349,6 +349,7 @@ static int init_egl(void)
 	printf("opengl-cube: GL_RENDERER \"%s\"\n", glGetString(GL_RENDERER));
 
 	wwn_cube_hud_init(&g_hud);
+	wwn_cube_hud_set_client(&g_hud, "opengl-cube");
 	g_hud.kms = 0;
 	g_hud.drm = 0;
 	g_hud.gbm = 0;

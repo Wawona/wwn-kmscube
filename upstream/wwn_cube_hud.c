@@ -109,9 +109,17 @@ void wwn_cube_hud_init(struct wwn_cube_hud *h)
   if (!h)
     return;
   memset(h, 0, sizeof(*h));
+  hud_copy_trunc(h->client, sizeof(h->client), "-");
   hud_copy_trunc(h->vulkan_backend, sizeof(h->vulkan_backend), "-");
   hud_copy_trunc(h->opengl_backend, sizeof(h->opengl_backend), "-");
   h->fps_t0 = hud_now();
+}
+
+void wwn_cube_hud_set_client(struct wwn_cube_hud *h, const char *name)
+{
+  if (!h)
+    return;
+  hud_copy_trunc(h->client, sizeof(h->client), name);
 }
 
 void wwn_cube_hud_tick(struct wwn_cube_hud *h)
@@ -199,6 +207,7 @@ static void draw_char(uint8_t *rgba, int width, int height, int stride, int x,
 static void hud_format(const struct wwn_cube_hud *h, char *out, size_t n)
 {
   snprintf(out, n,
+           "client: %s\n"
            "fps: %.0f\n"
            "kms: %s\n"
            "drm: %s\n"
@@ -207,6 +216,7 @@ static void hud_format(const struct wwn_cube_hud *h, char *out, size_t n)
            "OpenGL: %s\n"
            "vulkan backend: %s\n"
            "opengl backend: %s",
+           h ? h->client : "-",
            h ? h->fps : 0.f,
            hud_yn(h ? h->kms : 0), hud_yn(h ? h->drm : 0),
            hud_yn(h ? h->gbm : 0), hud_yn(h ? h->vulkan : 0),
@@ -339,8 +349,8 @@ void wwn_cube_hud_draw_gl(int fb_w, int fb_h, const struct wwn_cube_hud *h)
   int overlay_h = fb_h / 4;
   if (overlay_w < 280)
     overlay_w = (fb_w < 280) ? fb_w : 280;
-  if (overlay_h < 160)
-    overlay_h = (fb_h < 160) ? fb_h : 160;
+  if (overlay_h < 180)
+    overlay_h = (fb_h < 180) ? fb_h : 180;
   if (overlay_w > fb_w)
     overlay_w = fb_w;
   if (overlay_h > fb_h)

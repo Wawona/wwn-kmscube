@@ -939,6 +939,7 @@ int main(int argc, char *argv[])
 	printf("init gl success!\n");
 
 	wwn_cube_hud_init(&g_hud);
+	wwn_cube_hud_set_client(&g_hud, "kmscube");
 	g_hud.kms = 1;
 	g_hud.drm = 1;
 	g_hud.gbm = 1;

@@ -454,6 +454,7 @@ static int init_vulkan(struct app *app) {
   memset(&props, 0, sizeof(props));
   vkGetPhysicalDeviceProperties(app->physical_device, &props);
   wwn_cube_hud_init(&g_hud);
+  wwn_cube_hud_set_client(&g_hud, "vkcube-kms");
   g_hud.kms = 1;
   g_hud.drm = 1;
   g_hud.gbm = 1;

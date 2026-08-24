@@ -16,6 +16,7 @@ struct wwn_cube_hud {
   int gbm;
   int vulkan;
   int opengl;
+  char client[48];
   char vulkan_backend[80];
   char opengl_backend[80];
   float fps;
@@ -24,6 +25,7 @@ struct wwn_cube_hud {
 };
 
 void wwn_cube_hud_init(struct wwn_cube_hud *h);
+void wwn_cube_hud_set_client(struct wwn_cube_hud *h, const char *name);
 void wwn_cube_hud_tick(struct wwn_cube_hud *h);
 void wwn_cube_hud_fill_gl(struct wwn_cube_hud *h);
 void wwn_cube_hud_set_vk(struct wwn_cube_hud *h, const char *provider_path,
