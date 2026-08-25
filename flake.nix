@@ -125,7 +125,7 @@
           ipados = ./dependencies/clients/vkcube/ipados.nix;
           visionos = ./dependencies/clients/vkcube/visionos.nix;
           macos = ./dependencies/clients/vkcube/macos.nix;
-          # tvOS is planned GPU (MoltenVK). watchOS is blocked (no Metal).
+          # tvOS: MoltenVK (Vulkan to Metal). watchOS is blocked (no Metal).
           tvos = ./dependencies/clients/vkcube/tvos.nix;
           watchos = null;
           linux = null;
@@ -137,11 +137,10 @@
           ipados = ./dependencies/clients/opengl-cube/ipados.nix;
           visionos = ./dependencies/clients/opengl-cube/visionos.nix;
           macos = ./dependencies/clients/opengl-cube/macos.nix;
-          # Refused at the registry (not just by allowGpu, as kmscube's
-          # tvos.nix re-export is) so a deps mistake cannot link a GL stack in.
-          # tvOS is ⏳ planned, watchOS is ⛔ blocked — see the gate legend in
-          # `wawona-platform-targets`; neither is a permanent product decision.
-          tvos = null;
+          # tvOS: Wayland-EGL cube over iland + ANGLE (same apple-mobile.nix
+          # as iOS/visionOS). watchOS stays null: no Metal in the SDK.
+          # Cited: Wawona/docs/wwn-repo-dag.md.
+          tvos = ./dependencies/clients/opengl-cube/ios.nix;
           watchos = null;
           linux = null;
         };
@@ -194,6 +193,8 @@
               opengl-cube-ios-sim = tc.buildForIOS "opengl-cube" { simulator = true; };
               opengl-cube-ipados = tc.buildForIPadOS "opengl-cube" { };
               opengl-cube-visionos = tc.buildForVisionOS "opengl-cube" { };
+              opengl-cube-tvos = tc.buildForTVOS "opengl-cube" { };
+              opengl-cube-tvos-sim = tc.buildForTVOS "opengl-cube" { simulator = true; };
               opengl-cube-macos = tc.buildForMacOS "opengl-cube" { };
             }
           else
