@@ -224,38 +224,59 @@ static void hud_format(const struct wwn_cube_hud *h, char *out, size_t n)
            h ? h->vulkan_backend : "-", h ? h->opengl_backend : "-");
 }
 
-void wwn_cube_hud_blit_rgba(uint8_t *rgba, int width, int height, int stride,
-                            const struct wwn_cube_hud *h, int bgra)
+/* 8px bitmap. Scale from the framebuffer (or dest) height so Retina phones
+ * get ~50-64px glyphs instead of 16px. Clamp so 1080p stays readable. */
+static int hud_text_scale(int reference_h)
 {
-  if (!rgba || width <= 0 || height <= 0 || stride < width * 4)
-    return;
+  int scale = reference_h / 280;
+  if (scale < 2)
+    scale = 2;
+  if (scale > 8)
+    scale = 8;
+  return scale;
+}
 
-  char text[512];
-  hud_format(h, text, sizeof(text));
-
-  const int scale = (height >= 800) ? 3 : 2;
+static void hud_measure_text(const char *text, int scale, int *box_w,
+                             int *box_h)
+{
   const int pad = 10;
   const int gw = 8 * scale;
   const int gh = 8 * scale;
-  int lines = 1;
+  int lines = 1, maxc = 0, cur = 0;
   const char *s;
-  for (s = text; *s; s++)
-    if (*s == '\n')
-      lines++;
-  int maxc = 0, cur = 0;
-  for (s = text; ; s++) {
+  for (s = text ? text : ""; ; s++) {
     if (*s == '\n' || *s == 0) {
       if (cur > maxc)
         maxc = cur;
       cur = 0;
       if (!*s)
         break;
+      lines++;
     } else {
       cur++;
     }
   }
-  int box_w = pad * 2 + maxc * gw;
-  int box_h = pad * 2 + lines * gh;
+  *box_w = pad * 2 + maxc * gw;
+  *box_h = pad * 2 + lines * gh;
+}
+
+static void hud_blit_rgba_scaled(uint8_t *rgba, int width, int height,
+                                 int stride, const struct wwn_cube_hud *h,
+                                 int bgra, int scale)
+{
+  if (!rgba || width <= 0 || height <= 0 || stride < width * 4)
+    return;
+  if (scale < 1)
+    scale = 1;
+
+  char text[512];
+  hud_format(h, text, sizeof(text));
+
+  const int pad = 10;
+  const int gw = 8 * scale;
+  const int gh = 8 * scale;
+  int box_w = 0, box_h = 0;
+  hud_measure_text(text, scale, &box_w, &box_h);
   if (box_w > width)
     box_w = width;
   if (box_h > height)
@@ -273,6 +294,7 @@ void wwn_cube_hud_blit_rgba(uint8_t *rgba, int width, int height, int stride,
   }
 
   int cx = pad, cy = pad;
+  const char *s;
   for (s = text; *s; s++) {
     if (*s == '\n') {
       cx = pad;
@@ -283,6 +305,13 @@ void wwn_cube_hud_blit_rgba(uint8_t *rgba, int width, int height, int stride,
               bgra);
     cx += gw;
   }
+}
+
+void wwn_cube_hud_blit_rgba(uint8_t *rgba, int width, int height, int stride,
+                            const struct wwn_cube_hud *h, int bgra)
+{
+  hud_blit_rgba_scaled(rgba, width, height, stride, h, bgra,
+                       hud_text_scale(height));
 }
 
 #ifdef WWN_CUBE_HUD_GL
@@ -304,6 +333,19 @@ static const char *hud_vs =
     "  v_uv = a_uv;\n"
     "}\n";
 
+/* ANGLE on Apple uploads CPU row 0 as texture v=0 (top). Desktop GL treats
+ * that row as v=0 = bottom. Flip V on Apple so the hub is upright after the
+ * same NDC quad the Linux path uses. */
+#if defined(__APPLE__)
+static const char *hud_fs =
+    "#version 100\n"
+    "precision mediump float;\n"
+    "varying vec2 v_uv;\n"
+    "uniform sampler2D u_tex;\n"
+    "void main() {\n"
+    "  gl_FragColor = texture2D(u_tex, vec2(v_uv.x, 1.0 - v_uv.y));\n"
+    "}\n";
+#else
 static const char *hud_fs =
     "#version 100\n"
     "precision mediump float;\n"
@@ -312,6 +354,42 @@ static const char *hud_fs =
     "void main() {\n"
     "  gl_FragColor = texture2D(u_tex, v_uv);\n"
     "}\n";
+#endif
+
+typedef struct {
+  GLint enabled;
+  GLint size;
+  GLint stride;
+  GLint type;
+  GLint normalized;
+  GLint buffer;
+  const void *ptr;
+} HudAttrib;
+
+static void hud_save_attrib(GLuint i, HudAttrib *a)
+{
+  void *ptr = NULL;
+  glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &a->enabled);
+  glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_SIZE, &a->size);
+  glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &a->stride);
+  glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_TYPE, &a->type);
+  glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, &a->normalized);
+  glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &a->buffer);
+  glGetVertexAttribPointerv(i, GL_VERTEX_ATTRIB_ARRAY_POINTER, &ptr);
+  a->ptr = ptr;
+}
+
+static void hud_restore_attrib(GLuint i, const HudAttrib *a)
+{
+  glBindBuffer(GL_ARRAY_BUFFER, (GLuint)a->buffer);
+  if (a->size > 0 && a->type != 0)
+    glVertexAttribPointer(i, a->size, (GLenum)a->type,
+                          (GLboolean)a->normalized, a->stride, a->ptr);
+  if (a->enabled)
+    glEnableVertexAttribArray(i);
+  else
+    glDisableVertexAttribArray(i);
+}
 
 static GLuint wwn_hud_compile_shader(GLenum type, const char *src)
 {
@@ -345,16 +423,23 @@ void wwn_cube_hud_draw_gl(int fb_w, int fb_h, const struct wwn_cube_hud *h)
   if (fb_w <= 0 || fb_h <= 0 || !hud_gl_ready())
     return;
 
-  int overlay_w = fb_w / 3;
-  int overlay_h = fb_h / 4;
-  if (overlay_w < 280)
-    overlay_w = (fb_w < 280) ? fb_w : 280;
-  if (overlay_h < 180)
-    overlay_h = (fb_h < 180) ? fb_h : 180;
+  /* Size the hub to the text box, scaled from the *framebuffer* height.
+   * Using overlay_h (fb/4) made scale=2 on a 3x iPhone, so glyphs were 16px. */
+  int scale = hud_text_scale(fb_h);
+  char text[512];
+  hud_format(h, text, sizeof(text));
+  int overlay_w = 0, overlay_h = 0;
+  hud_measure_text(text, scale, &overlay_w, &overlay_h);
+  while (scale > 2 && (overlay_w > fb_w || overlay_h > fb_h / 2)) {
+    scale--;
+    hud_measure_text(text, scale, &overlay_w, &overlay_h);
+  }
   if (overlay_w > fb_w)
     overlay_w = fb_w;
   if (overlay_h > fb_h)
     overlay_h = fb_h;
+  if (overlay_w < 1 || overlay_h < 1)
+    return;
 
   int need = overlay_w * overlay_h * 4;
   if (!hud_scratch || hud_scratch_n < need) {
@@ -367,11 +452,14 @@ void wwn_cube_hud_draw_gl(int fb_w, int fb_h, const struct wwn_cube_hud *h)
     memset(hud_scratch, 0, (size_t)need);
   }
 
-  wwn_cube_hud_blit_rgba(hud_scratch, overlay_w, overlay_h, overlay_w * 4, h, 0);
+  hud_blit_rgba_scaled(hud_scratch, overlay_w, overlay_h, overlay_w * 4, h, 0,
+                       scale);
 
   GLint prev_prog = 0, prev_tex = 0, prev_buf = 0, prev_vao = 0;
   GLint prev_viewport[4];
+  GLint prev_blend_src = 0, prev_blend_dst = 0;
   GLboolean prev_blend, prev_depth, prev_cull;
+  HudAttrib attrib0, attrib1, attrib2;
   glGetIntegerv(GL_CURRENT_PROGRAM, &prev_prog);
   glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
   glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prev_buf);
@@ -379,9 +467,16 @@ void wwn_cube_hud_draw_gl(int fb_w, int fb_h, const struct wwn_cube_hud *h)
   glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prev_vao);
 #endif
   glGetIntegerv(GL_VIEWPORT, prev_viewport);
+  glGetIntegerv(GL_BLEND_SRC_RGB, &prev_blend_src);
+  glGetIntegerv(GL_BLEND_DST_RGB, &prev_blend_dst);
   prev_blend = glIsEnabled(GL_BLEND);
   prev_depth = glIsEnabled(GL_DEPTH_TEST);
   prev_cull = glIsEnabled(GL_CULL_FACE);
+  /* kmscube sets attribs 0-2 once at init and never again. Overwriting them
+   * (and disabling 0/1) made the cube vanish after the first hub frame. */
+  hud_save_attrib(0, &attrib0);
+  hud_save_attrib(1, &attrib1);
+  hud_save_attrib(2, &attrib2);
 
   glDisable(GL_DEPTH_TEST);
   glDisable(GL_CULL_FACE);
@@ -406,8 +501,14 @@ void wwn_cube_hud_draw_gl(int fb_w, int fb_h, const struct wwn_cube_hud *h)
 
   float ndc_w = 2.f * (float)overlay_w / (float)fb_w;
   float ndc_h = 2.f * (float)overlay_h / (float)fb_h;
+#if defined(__APPLE__)
+  /* Metal present flips GL y (bottom-left origin to UIKit top-left). A hub
+   * at GL y=1 landed at the bottom of the iOS window. */
+  float x0 = -1.f, y0 = -1.f, x1 = -1.f + ndc_w, y1 = -1.f + ndc_h;
+#else
   /* Top-left in GL NDC (y up): x=-1, y=1 */
   float x0 = -1.f, y1 = 1.f, x1 = -1.f + ndc_w, y0 = 1.f - ndc_h;
+#endif
   float verts[] = {
       x0, y0, 0.f, 1.f, x1, y0, 1.f, 1.f, x0, y1, 0.f, 0.f, x1, y1, 1.f, 0.f,
   };
@@ -423,8 +524,10 @@ void wwn_cube_hud_draw_gl(int fb_w, int fb_h, const struct wwn_cube_hud *h)
   if (loc >= 0)
     glUniform1i(loc, 0);
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-  glDisableVertexAttribArray(0);
-  glDisableVertexAttribArray(1);
+
+  hud_restore_attrib(0, &attrib0);
+  hud_restore_attrib(1, &attrib1);
+  hud_restore_attrib(2, &attrib2);
 
   glUseProgram((GLuint)prev_prog);
   glBindTexture(GL_TEXTURE_2D, (GLuint)prev_tex);
@@ -434,6 +537,7 @@ void wwn_cube_hud_draw_gl(int fb_w, int fb_h, const struct wwn_cube_hud *h)
 #endif
   glViewport(prev_viewport[0], prev_viewport[1], prev_viewport[2],
              prev_viewport[3]);
+  glBlendFunc((GLenum)prev_blend_src, (GLenum)prev_blend_dst);
   if (!prev_blend)
     glDisable(GL_BLEND);
   if (prev_depth)
