@@ -17,7 +17,7 @@
  * never engaged, so vkcube renders on the CPU and survives. On-device iOS keeps
  * the static MoltenVK path (TARGET_OS_SIMULATOR is 0 there). */
 #if defined(__ANDROID__) \
-    || (defined(__APPLE__) && (TARGET_OS_OSX || TARGET_OS_SIMULATOR))
+    || (defined(__APPLE__) && (TARGET_OS_OSX || (TARGET_OS_SIMULATOR && !TARGET_OS_TV)))
 #define WWN_VKCUBE_RUNTIME_DISPATCH 1
 #endif
 

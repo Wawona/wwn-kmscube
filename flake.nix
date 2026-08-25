@@ -10,7 +10,7 @@
     wwn-toolchain.inputs.rust-overlay.follows = "rust-overlay";
     # L2 -> L1 edge; see Wawona/docs/wwn-repo-dag.md. FlakeHub rolling follows
     # the published L1 tip (MoltenVK/SwiftShader provider registry).
-    wwn-iland.url = "https://flakehub.com/f/Wawona/wwn-iland/*";
+    wwn-iland.url = "github:Wawona/wwn-iland/tvos-gpu";
     wwn-iland.inputs.nixpkgs.follows = "nixpkgs";
     wwn-iland.inputs.wwn-toolchain.follows = "wwn-toolchain";
   };
@@ -125,11 +125,8 @@
           ipados = ./dependencies/clients/vkcube/ipados.nix;
           visionos = ./dependencies/clients/vkcube/visionos.nix;
           macos = ./dependencies/clients/vkcube/macos.nix;
-          # Not policy — see the gate legend in `wawona-platform-targets`:
-          # tvOS is ⏳ planned (SDK has Metal; MoltenVK supports tvOS 14.5+, so
-          # this becomes a real recipe in the final graphics phase behind
-          # WWN_TVOS_GPU), watchOS is ⛔ blocked (no Metal.framework at all).
-          tvos = null;
+          # tvOS is planned GPU (MoltenVK). watchOS is blocked (no Metal).
+          tvos = ./dependencies/clients/vkcube/tvos.nix;
           watchos = null;
           linux = null;
         };
@@ -191,6 +188,8 @@
               vkcube-visionos = tc.buildForVisionOS "vkcube" { };
               vkcube-visionos-sim = tc.buildForVisionOS "vkcube" { simulator = true; };
               vkcube-macos = tc.buildForMacOS "vkcube" { };
+              vkcube-tvos = tc.buildForTVOS "vkcube" { };
+              vkcube-tvos-sim = tc.buildForTVOS "vkcube" { simulator = true; };
               opengl-cube-ios = tc.buildForIOS "opengl-cube" { };
               opengl-cube-ios-sim = tc.buildForIOS "opengl-cube" { simulator = true; };
               opengl-cube-ipados = tc.buildForIPadOS "opengl-cube" { };

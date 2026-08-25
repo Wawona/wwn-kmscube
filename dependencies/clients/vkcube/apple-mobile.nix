@@ -1,6 +1,6 @@
 # krh/vkcube as a Wayland client over iland's IOSurface dmabuf winsys +
-# MoltenVK — Apple mobile archive. tvOS/watchOS deliberately have no registry
-# variant: those products forbid Vulkan.
+# MoltenVK. Apple mobile archive (iOS / iPadOS / visionOS / tvOS). watchOS
+# has no registry variant: no Metal, Vulkan stays blocked.
 {
   lib,
   pkgs,
