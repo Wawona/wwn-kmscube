@@ -207,39 +207,98 @@ static void draw_char(uint8_t *rgba, int width, int height, int stride, int x,
 static void hud_format(const struct wwn_cube_hud *h, char *out, size_t n)
 {
   snprintf(out, n,
-           "client: %s\n"
-           "fps: %.0f\n"
-           "kms: %s\n"
-           "drm: %s\n"
-           "gbm: %s\n"
-           "vulkan: %s\n"
-           "OpenGL: %s\n"
-           "vulkan backend: %s\n"
-           "opengl backend: %s",
+           "%s  %.0f fps\n"
+           "kms %s  drm %s  gbm %s\n"
+           "vulkan %s  %s\n"
+           "OpenGL %s  %s",
            h ? h->client : "-",
            h ? h->fps : 0.f,
            hud_yn(h ? h->kms : 0), hud_yn(h ? h->drm : 0),
-           hud_yn(h ? h->gbm : 0), hud_yn(h ? h->vulkan : 0),
-           hud_yn(h ? h->opengl : 0),
-           h ? h->vulkan_backend : "-", h ? h->opengl_backend : "-");
+           hud_yn(h ? h->gbm : 0),
+           hud_yn(h ? h->vulkan : 0), h ? h->vulkan_backend : "-",
+           hud_yn(h ? h->opengl : 0), h ? h->opengl_backend : "-");
 }
 
-/* 8px bitmap. Scale from the framebuffer (or dest) height so Retina phones
- * get ~50-64px glyphs instead of 16px. Clamp so 1080p stays readable. */
-static int hud_text_scale(int reference_h)
+static int hud_pad(int scale)
 {
-  int scale = reference_h / 280;
-  if (scale < 2)
-    scale = 2;
-  if (scale > 8)
-    scale = 8;
-  return scale;
+  int p = 4 + scale;
+  if (p < 6)
+    p = 6;
+  if (p > 14)
+    p = 14;
+  return p;
+}
+
+/* Wrap on spaces. Hard-split tokens that are longer than max_chars so a long
+ * GL renderer string cannot blow past the surface. */
+static void hud_wrap_text(const char *in, char *out, size_t n, int max_chars)
+{
+  size_t o = 0;
+  int col = 0;
+
+  if (!out || n == 0)
+    return;
+  if (max_chars < 8)
+    max_chars = 8;
+  if (!in)
+    in = "";
+
+  while (*in && o + 1 < n) {
+    const char *w;
+    int wl;
+
+    if (*in == '\n') {
+      out[o++] = '\n';
+      col = 0;
+      in++;
+      continue;
+    }
+    while (*in == ' ')
+      in++;
+    if (!*in)
+      break;
+    w = in;
+    while (*in && *in != ' ' && *in != '\n')
+      in++;
+    wl = (int)(in - w);
+    if (col > 0 && col + 1 + wl > max_chars) {
+      out[o++] = '\n';
+      col = 0;
+      if (o + 1 >= n)
+        break;
+    }
+    if (col > 0) {
+      out[o++] = ' ';
+      col++;
+    }
+    if (wl > max_chars && col == 0) {
+      while (wl > 0 && o + 1 < n) {
+        int take = wl > max_chars ? max_chars : wl;
+        memcpy(out + o, w, (size_t)take);
+        o += (size_t)take;
+        w += take;
+        wl -= take;
+        col = take;
+        if (wl > 0 && o + 1 < n) {
+          out[o++] = '\n';
+          col = 0;
+        }
+      }
+    } else if (o + (size_t)wl < n) {
+      memcpy(out + o, w, (size_t)wl);
+      o += (size_t)wl;
+      col += wl;
+    } else {
+      break;
+    }
+  }
+  out[o] = 0;
 }
 
 static void hud_measure_text(const char *text, int scale, int *box_w,
                              int *box_h)
 {
-  const int pad = 10;
+  const int pad = hud_pad(scale);
   const int gw = 8 * scale;
   const int gh = 8 * scale;
   int lines = 1, maxc = 0, cur = 0;
@@ -260,19 +319,68 @@ static void hud_measure_text(const char *text, int scale, int *box_w,
   *box_h = pad * 2 + lines * gh;
 }
 
+/* Pick a glyph scale that keeps the hub inside the surface. Recalculated every
+ * frame so rotation / mode changes reflow. Cap height to the shorter side so a
+ * portrait phone does not get a full-width Retina billboard. */
+static int hud_fit_overlay(int fb_w, int fb_h, const char *src, char *wrapped,
+                           size_t wrapped_n, int *box_w, int *box_h)
+{
+  int min_side = fb_w < fb_h ? fb_w : fb_h;
+  int max_w = fb_w * 62 / 100;
+  int max_h = min_side * 20 / 100;
+  int fb_h_cap = fb_h * 18 / 100;
+  int scale;
+
+  if (fb_h_cap > 0 && fb_h_cap < max_h)
+    max_h = fb_h_cap;
+  if (max_w < 48)
+    max_w = fb_w > 8 ? fb_w - 8 : fb_w;
+  if (max_h < 40)
+    max_h = fb_h / 5;
+  if (max_h < 24)
+    max_h = fb_h > 8 ? fb_h - 8 : fb_h;
+
+  /* Retina phones have a short side > 1000px. Starting at min_side/320 made
+   * a billboard. Fit to the plate instead, then shrink until it is inside. */
+  scale = min_side / 480;
+  if (scale < 1)
+    scale = 1;
+  if (scale > 3)
+    scale = 3;
+
+  for (;;) {
+    int pad = hud_pad(scale);
+    int max_chars = (8 * scale) > 0 ? (max_w - 2 * pad) / (8 * scale) : 8;
+    if (max_chars < 8)
+      max_chars = 8;
+    hud_wrap_text(src, wrapped, wrapped_n, max_chars);
+    hud_measure_text(wrapped, scale, box_w, box_h);
+    if (*box_w <= max_w && *box_h <= max_h)
+      break;
+    if (scale <= 1)
+      break;
+    scale--;
+  }
+  if (*box_w > fb_w)
+    *box_w = fb_w;
+  if (*box_h > fb_h)
+    *box_h = fb_h;
+  return scale;
+}
+
 static void hud_blit_rgba_scaled(uint8_t *rgba, int width, int height,
                                  int stride, const struct wwn_cube_hud *h,
-                                 int bgra, int scale)
+                                 int bgra, int scale, const char *text)
 {
   if (!rgba || width <= 0 || height <= 0 || stride < width * 4)
     return;
   if (scale < 1)
     scale = 1;
+  if (!text)
+    text = "";
+  (void)h;
 
-  char text[512];
-  hud_format(h, text, sizeof(text));
-
-  const int pad = 10;
+  const int pad = hud_pad(scale);
   const int gw = 8 * scale;
   const int gh = 8 * scale;
   int box_w = 0, box_h = 0;
@@ -310,8 +418,14 @@ static void hud_blit_rgba_scaled(uint8_t *rgba, int width, int height,
 void wwn_cube_hud_blit_rgba(uint8_t *rgba, int width, int height, int stride,
                             const struct wwn_cube_hud *h, int bgra)
 {
-  hud_blit_rgba_scaled(rgba, width, height, stride, h, bgra,
-                       hud_text_scale(height));
+  char raw[512], wrapped[768];
+  int scale, box_w = 0, box_h = 0;
+  hud_format(h, raw, sizeof(raw));
+  scale = hud_fit_overlay(width, height, raw, wrapped, sizeof(wrapped), &box_w,
+                          &box_h);
+  (void)box_w;
+  (void)box_h;
+  hud_blit_rgba_scaled(rgba, width, height, stride, h, bgra, scale, wrapped);
 }
 
 #ifdef WWN_CUBE_HUD_GL
@@ -423,21 +537,11 @@ void wwn_cube_hud_draw_gl(int fb_w, int fb_h, const struct wwn_cube_hud *h)
   if (fb_w <= 0 || fb_h <= 0 || !hud_gl_ready())
     return;
 
-  /* Size the hub to the text box, scaled from the *framebuffer* height.
-   * Using overlay_h (fb/4) made scale=2 on a 3x iPhone, so glyphs were 16px. */
-  int scale = hud_text_scale(fb_h);
-  char text[512];
-  hud_format(h, text, sizeof(text));
+  char raw[512], wrapped[768];
   int overlay_w = 0, overlay_h = 0;
-  hud_measure_text(text, scale, &overlay_w, &overlay_h);
-  while (scale > 2 && (overlay_w > fb_w || overlay_h > fb_h / 2)) {
-    scale--;
-    hud_measure_text(text, scale, &overlay_w, &overlay_h);
-  }
-  if (overlay_w > fb_w)
-    overlay_w = fb_w;
-  if (overlay_h > fb_h)
-    overlay_h = fb_h;
+  hud_format(h, raw, sizeof(raw));
+  int scale = hud_fit_overlay(fb_w, fb_h, raw, wrapped, sizeof(wrapped),
+                              &overlay_w, &overlay_h);
   if (overlay_w < 1 || overlay_h < 1)
     return;
 
@@ -453,7 +557,7 @@ void wwn_cube_hud_draw_gl(int fb_w, int fb_h, const struct wwn_cube_hud *h)
   }
 
   hud_blit_rgba_scaled(hud_scratch, overlay_w, overlay_h, overlay_w * 4, h, 0,
-                       scale);
+                       scale, wrapped);
 
   GLint prev_prog = 0, prev_tex = 0, prev_buf = 0, prev_vao = 0;
   GLint prev_viewport[4];
