@@ -125,9 +125,9 @@
           ipados = ./dependencies/clients/vkcube/ipados.nix;
           visionos = ./dependencies/clients/vkcube/visionos.nix;
           macos = ./dependencies/clients/vkcube/macos.nix;
-          # tvOS: MoltenVK (Vulkan to Metal). watchOS is blocked (no Metal).
+          # tvOS: MoltenVK (Vulkan to Metal). watchOS: SwiftShader CPU ICD.
           tvos = ./dependencies/clients/vkcube/tvos.nix;
-          watchos = null;
+          watchos = ./dependencies/clients/vkcube/watchos.nix;
           linux = null;
         };
         "opengl-cube" = withPlatformVariants {
@@ -141,7 +141,7 @@
           # as iOS/visionOS). watchOS stays null: no Metal in the SDK.
           # Cited: Wawona/docs/wwn-repo-dag.md.
           tvos = ./dependencies/clients/opengl-cube/ios.nix;
-          watchos = null;
+          watchos = ./dependencies/clients/opengl-cube/watchos.nix;
           linux = null;
         };
         # Backward-compatible alias for flakes that still key nativeDeps on this name.

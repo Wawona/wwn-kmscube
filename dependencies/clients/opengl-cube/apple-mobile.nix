@@ -2,8 +2,7 @@
 #
 # Renders c2d7fa/opengl-cube (CC0), ported off GLFW/GLEW onto Wayland + EGL:
 # xdg-shell toplevel + wl_egl_window on Wawona's compositor, via iland's
-# Wayland-EGL winsys. This is NOT the iland KMS path — that one is kmscube.
-# Needs GLES3 (VAOs, GLSL ES 300) where kmscube only needs GLES2.
+# Wayland-EGL winsys. watchOS uses CPU ANGLE-on-Vulkan + wl_shm present.
 {
   lib,
   pkgs,
@@ -16,9 +15,15 @@
 }:
 
 let
-  iland = buildModule.buildForIOS "iland" { inherit simulator; };
-  angle = buildModule.buildForIOS "angle" { inherit simulator; };
-  libwayland = buildModule.buildForIOS "libwayland" { inherit simulator; };
+  isWatchOS = iosToolchain.isWatchOSToolchain or false;
+  buildForMobile = name:
+    if isWatchOS then
+      buildModule.buildForWatchOS name { inherit simulator; }
+    else
+      buildModule.buildForIOS name { inherit simulator; };
+  iland = buildForMobile "iland";
+  angle = buildForMobile "angle";
+  libwayland = buildForMobile "libwayland";
   waylandProtocols = pkgs.wayland-protocols;
   mobile = (import "${toolchainSrc}/dependencies/toolchains/apple-mobile-platform.nix") {
     inherit iosToolchain simulator;

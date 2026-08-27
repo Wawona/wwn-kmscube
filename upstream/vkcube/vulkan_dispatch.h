@@ -17,7 +17,8 @@
  * never engaged, so vkcube renders on the CPU and survives. On-device iOS keeps
  * the static MoltenVK path (TARGET_OS_SIMULATOR is 0 there). */
 #if defined(__ANDROID__) \
-    || (defined(__APPLE__) && (TARGET_OS_OSX || (TARGET_OS_SIMULATOR && !TARGET_OS_TV)))
+    || (defined(__APPLE__) && (TARGET_OS_OSX || (TARGET_OS_SIMULATOR && !TARGET_OS_TV))) \
+    || (defined(__APPLE__) && TARGET_OS_WATCH)
 #define WWN_VKCUBE_RUNTIME_DISPATCH 1
 #endif
 
@@ -113,9 +114,14 @@ WWN_VK_DEVICE_FUNCTIONS(WWN_DECLARE_VK)
 #else
 /* Set by WWNSettings_ApplyGraphicsDriverSelection to the bundled ICD dylib for
  * the selected driver. There is no Vulkan loader in the bundle, so this is the
- * ICD itself rather than a manifest. */
+ * ICD itself rather than a manifest. watchOS uses a static SwiftShader archive
+ * in-process; an empty path means dlopen(NULL). */
 #define WWN_VKCUBE_PROVIDER_ENV "WWN_VULKAN_LIBRARY"
+#if defined(__APPLE__) && TARGET_OS_WATCH
+#define WWN_VKCUBE_PROVIDER_FALLBACK ""
+#else
 #define WWN_VKCUBE_PROVIDER_FALLBACK "libMoltenVK.dylib"
+#endif
 #endif
 
 #ifndef WWN_VKCUBE_PROVIDER_FALLBACKS_ENV
@@ -185,11 +191,25 @@ static int wwn_vkcube_provider_count(void) {
  * success. Caller iterates providers (init_vulkan) and calls
  * wwn_vkcube_close_dispatch between attempts. */
 static int wwn_vkcube_load_global_dispatch_path(const char *path) {
+#if defined(__APPLE__) && TARGET_OS_WATCH
+  if (!path || !path[0]) {
+    wwn_vk_library = dlopen(NULL, RTLD_NOW | RTLD_LOCAL);
+    if (!wwn_vk_library) {
+      fprintf(stderr, "vkcube: cannot dlopen main binary for static SwiftShader: %s\n",
+              dlerror());
+      return -1;
+    }
+    snprintf(wwn_vk_loaded_path, sizeof(wwn_vk_loaded_path), "SwiftShader (static)");
+  } else
+#endif
+  {
   wwn_vk_library = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (!wwn_vk_library) {
     fprintf(stderr, "vkcube: cannot load Vulkan provider %s: %s\n", path,
             dlerror());
     return -1;
+  }
+  snprintf(wwn_vk_loaded_path, sizeof(wwn_vk_loaded_path), "%s", path);
   }
   wwn_vkGetInstanceProcAddr =
       (PFN_vkGetInstanceProcAddr)dlsym(wwn_vk_library, "vkGetInstanceProcAddr");
@@ -199,11 +219,11 @@ static int wwn_vkcube_load_global_dispatch_path(const char *path) {
         wwn_vk_library, "vk_icdGetInstanceProcAddr");
   }
   if (!wwn_vkGetInstanceProcAddr) {
-    fprintf(stderr, "vkcube: %s has no vkGetInstanceProcAddr\n", path);
+    fprintf(stderr, "vkcube: %s has no vkGetInstanceProcAddr\n",
+            wwn_vk_loaded_path[0] ? wwn_vk_loaded_path : (path ? path : ""));
     return -1;
   }
-    snprintf(wwn_vk_loaded_path, sizeof(wwn_vk_loaded_path), "%s", path);
-  fprintf(stderr, "vkcube: Vulkan provider %s\n", path);
+  fprintf(stderr, "vkcube: Vulkan provider %s\n", wwn_vk_loaded_path);
 #define WWN_LOAD_GLOBAL(name) \
   wwn_##name = (PFN_##name)wwn_vkGetInstanceProcAddr(VK_NULL_HANDLE, #name); \
   if (!wwn_##name) { \

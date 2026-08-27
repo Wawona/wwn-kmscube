@@ -1,6 +1,5 @@
-# krh/vkcube as a Wayland client over iland's IOSurface dmabuf winsys +
-# MoltenVK. Apple mobile archive (iOS / iPadOS / visionOS / tvOS). watchOS
-# has no registry variant: no Metal, Vulkan stays blocked.
+# krh/vkcube as a Wayland client. Apple mobile archive (iOS / iPadOS / visionOS /
+# tvOS / watchOS). watchOS uses CPU SwiftShader + wl_shm present (no Metal).
 {
   lib,
   pkgs,
@@ -13,14 +12,21 @@
 }:
 
 let
-  iland = buildModule.buildForIOS "iland" { inherit simulator; };
-  libwayland = buildModule.buildForIOS "libwayland" { inherit simulator; };
+  isWatchOS = iosToolchain.isWatchOSToolchain or false;
+  buildForMobile = name:
+    if isWatchOS then
+      buildModule.buildForWatchOS name { inherit simulator; }
+    else
+      buildModule.buildForIOS name { inherit simulator; };
+  iland = buildForMobile "iland";
+  libwayland = buildForMobile "libwayland";
   mobile = (import "${toolchainSrc}/dependencies/toolchains/apple-mobile-platform.nix") {
     inherit iosToolchain simulator;
   };
   sdkPlatform = mobile.sdkPlatform;
   minVerFlag = mobile.minVerFlag;
   waylandProtocols = pkgs.wayland-protocols;
+  watchShm = isWatchOS;
 in
 pkgs.stdenv.mkDerivation {
   pname = "vkcube-apple-mobile";
@@ -74,13 +80,13 @@ pkgs.stdenv.mkDerivation {
     EOF
     echo "${iland}" > "$out/nix-support/iland-path"
     echo "${libwayland}" > "$out/nix-support/libwayland-path"
-    echo moltenvk > "$out/nix-support/required-vulkan-registry-providers"
-    cat > "$out/nix-support/vkcube-build-metadata.json" <<'EOF'
+    echo ${if watchShm then "swiftshader" else "moltenvk"} > "$out/nix-support/required-vulkan-registry-providers"
+    cat > "$out/nix-support/vkcube-build-metadata.json" <<EOF
     {
       "upstream": "krh/vkcube",
       "revision": "ffd566971fac916fc90d33a442369d5717ceb2a9",
-      "presentation": "wayland-iosurface-dmabuf",
-      "vulkanProvider": "moltenvk-static",
+      "presentation": "${if watchShm then "wayland-shm" else "wayland-iosurface-dmabuf"}",
+      "vulkanProvider": "${if watchShm then "swiftshader-static" else "moltenvk-static"}",
       "translationLayers": []
     }
     EOF
