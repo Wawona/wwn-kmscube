@@ -6,6 +6,10 @@
 #include <string.h>
 #include <sys/time.h>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 #ifdef WWN_CUBE_HUD_GL
 /* GLES headers come from the including cube (ANGLE GLES2/GLES3). */
 #endif
@@ -447,10 +451,10 @@ static const char *hud_vs =
     "  v_uv = a_uv;\n"
     "}\n";
 
-/* ANGLE on Apple uploads CPU row 0 as texture v=0 (top). Desktop GL treats
- * that row as v=0 = bottom. Flip V on Apple so the hub is upright after the
- * same NDC quad the Linux path uses. */
-#if defined(__APPLE__)
+/* ANGLE-Metal on iOS/macOS uploads CPU row 0 as texture v=0 (top). Desktop GL
+ * and ANGLE-SwiftShader (watch software GLES) treat that row as v=0 = bottom.
+ * Flip V only on the Metal path so the hub stays upright. */
+#if defined(__APPLE__) && !TARGET_OS_WATCH
 static const char *hud_fs =
     "#version 100\n"
     "precision mediump float;\n"
@@ -605,17 +609,25 @@ void wwn_cube_hud_draw_gl(int fb_w, int fb_h, const struct wwn_cube_hud *h)
 
   float ndc_w = 2.f * (float)overlay_w / (float)fb_w;
   float ndc_h = 2.f * (float)overlay_h / (float)fb_h;
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !TARGET_OS_WATCH
   /* Metal present flips GL y (bottom-left origin to UIKit top-left). A hub
    * at GL y=1 landed at the bottom of the iOS window. */
   float x0 = -1.f, y0 = -1.f, x1 = -1.f + ndc_w, y1 = -1.f + ndc_h;
 #else
-  /* Top-left in GL NDC (y up): x=-1, y=1 */
+  /* Top-left in GL NDC (y up): x=-1, y=1. Watch SHM present flips bottom-up
+   * GLES readback to top-down, so the hub must sit at the GL top (same as
+   * Linux) or it ends up on the bottom of the SpriteKit surface. */
   float x0 = -1.f, y1 = 1.f, x1 = -1.f + ndc_w, y0 = 1.f - ndc_h;
 #endif
   float verts[] = {
       x0, y0, 0.f, 1.f, x1, y0, 1.f, 1.f, x0, y1, 0.f, 0.f, x1, y1, 1.f, 0.f,
   };
+
+  /* Do not rewrite attrib pointers on the caller's VAO (kmscube/opengl-cube
+   * leave theirs bound). That corrupted later frames on ANGLE/SwiftShader. */
+#ifdef GL_VERTEX_ARRAY_BINDING
+  glBindVertexArray(0);
+#endif
 
   glUseProgram(hud_prog);
   glBindBuffer(GL_ARRAY_BUFFER, hud_vbo);
