@@ -18,3 +18,18 @@
 #define WWN_ILAND_EMBEDDED 1
 
 #define eglGetDisplay(dev) (eglGetDisplay)((EGLNativeDisplayType)(uintptr_t)(dev))
+
+#if defined(WWN_ILAND_EMBEDDED)
+#include <os/log.h>
+static inline os_log_t wwn_gbm_es2_os_log(void) {
+    static os_log_t log;
+    if (!log) {
+        log = os_log_create("com.aspauldingcode.Wawona", "gbm-es2");
+    }
+    return log;
+}
+#define WWN_GBM_LOG(fmt, ...) \
+    os_log(wwn_gbm_es2_os_log(), fmt, ##__VA_ARGS__)
+#else
+#define WWN_GBM_LOG(fmt, ...) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
+#endif

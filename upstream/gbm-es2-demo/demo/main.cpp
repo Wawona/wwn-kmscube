@@ -107,6 +107,7 @@ extern "C" int gbm_es2_demo_main(int argc, char* argv[]) {
     demo.reset(new demo::ES2CubeImpl());
   }
   if (!demo->Initialize(card, atomic)) {
+    WWN_GBM_LOG("gbm-es2: ES2Cube Initialize failed");
     fprintf(stderr, "failed to initialize ES2Cube.\n");
     return -1;
   }

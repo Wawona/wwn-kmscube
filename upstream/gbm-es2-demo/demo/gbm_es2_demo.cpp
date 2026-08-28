@@ -52,6 +52,7 @@ bool ES2CubeImpl::Initialize(std::string card, bool atomic) {
   std::unique_ptr<ged::DRMModesetter> drm =
       ged::DRMModesetter::Create(card, atomic);
   if (!drm) {
+    WWN_GBM_LOG("gbm-es2: DRMModesetter::Create failed");
     fprintf(stderr, "failed to create DRMModesetter.\n");
     return false;
   }
@@ -60,6 +61,7 @@ bool ES2CubeImpl::Initialize(std::string card, bool atomic) {
       std::move(drm), std::bind(&ES2CubeImpl::DidSwapBuffer, this,
                                 std::placeholders::_1, std::placeholders::_2));
   if (!egl_) {
+    WWN_GBM_LOG("gbm-es2: EGLDRMGlue::Create failed");
     fprintf(stderr, "failed to create EGLDRMGlue.\n");
     return false;
   }
@@ -67,8 +69,10 @@ bool ES2CubeImpl::Initialize(std::string card, bool atomic) {
   display_size_ = egl_->GetDisplaySize();
 
   // Need to do the first mode setting before page flip.
-  if (!InitializeGL())
+  if (!InitializeGL()) {
+    WWN_GBM_LOG("gbm-es2: InitializeGL failed");
     return false;
+  }
   return true;
 }
 

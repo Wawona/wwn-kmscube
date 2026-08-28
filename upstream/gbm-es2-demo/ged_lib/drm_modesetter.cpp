@@ -299,6 +299,7 @@ class DRMModesetter::Impl {
      * modeset_dev_ null and made later ModeSetCrtc/GetDisplaySize assert or
      * fault. Treat "no usable connector" as init failure. */
     if (modeset_dev_list_.empty()) {
+      WWN_GBM_LOG("gbm-es2: no connected DRM connector");
       fprintf(stderr, "no connected DRM connector with a usable mode\n");
       return false;
     }

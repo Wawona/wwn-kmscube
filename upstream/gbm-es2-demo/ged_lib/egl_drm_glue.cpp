@@ -256,11 +256,13 @@ class EGLDRMGlue::Impl : public DRMModesetter::Client {
   bool Initialize() {
     gbm_ = gbm_create_device(drm_->GetFD());
     if (!gbm_) {
+      WWN_GBM_LOG("gbm-es2: gbm_create_device failed");
       fprintf(stderr, "cannot create gbm device.\n");
       return false;
     }
 
     if (!InitializeEGL()) {
+      WWN_GBM_LOG("gbm-es2: InitializeEGL failed");
       fprintf(stderr, "cannot create EGL context.\n");
       return false;
     }
@@ -269,14 +271,17 @@ class EGLDRMGlue::Impl : public DRMModesetter::Client {
     for (auto& framebuffer : framebuffers_) {
       if (!CreateFramebuffer(display_size.width, display_size.height,
                              framebuffer)) {
+        WWN_GBM_LOG("gbm-es2: CreateFramebuffer failed");
         fprintf(stderr, "cannot create framebuffer.\n");
         return false;
       }
     }
 
     // Need to do the first mode setting before page flip.
-    if (!drm_->ModeSetCrtc())
+    if (!drm_->ModeSetCrtc()) {
+      WWN_GBM_LOG("gbm-es2: ModeSetCrtc failed");
       return false;
+    }
 
     return true;
   }
@@ -320,7 +325,13 @@ class EGLDRMGlue::Impl : public DRMModesetter::Client {
       egl_.egl_sync_supported = false;
     }
 
+#ifdef WWN_ILAND_EMBEDDED
+    /* Match kmscube: iland EGL tags KMS displays by gbm_device*, not
+     * EGL_DEFAULT_DISPLAY (Apple EGLNativeDisplayType is int-sized). */
+    egl_.display = eglGetDisplay(gbm_);
+#else
     egl_.display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+#endif
 
     EGLint major, minor = 0;
     if (!eglInitialize(egl_.display, &major, &minor)) {
@@ -377,11 +388,17 @@ class EGLDRMGlue::Impl : public DRMModesetter::Client {
       return false;
     }
 
+#ifdef WWN_ILAND_EMBEDDED
+    /* Headless makeCurrent (no EGLSurface) is intentional on iland: scanout
+     * buffers are EGLImages, not window surfaces. ANGLE/SwiftShader may not
+     * expose GL_EXTENSIONS until a surface exists, so do not fail init here. */
+#else
     const char* gl_extensions = (const char*)glGetString(GL_EXTENSIONS);
     if (!ExtensionsContain("GL_OES_EGL_image", gl_extensions)) {
       fprintf(stderr, "GL_OES_EGL_image extension not supported\n");
       return false;
     }
+#endif
 
     return true;
   }
@@ -427,22 +444,27 @@ class EGLDRMGlue::Impl : public DRMModesetter::Client {
     framebuffer.bo = gbm_bo_create(gbm_, width, height, GBM_FORMAT_XRGB8888,
                                    GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
     if (!framebuffer.bo) {
+      WWN_GBM_LOG("gbm-es2: gbm_bo_create scanout buffer failed");
       fprintf(stderr, "failed to create a gbm buffer.\n");
       return false;
     }
 
     framebuffer.fd = gbm_bo_get_fd(framebuffer.bo);
     if (framebuffer.fd < 0) {
+      WWN_GBM_LOG("gbm-es2: gbm_bo_get_fd failed (%d)", framebuffer.fd);
       fprintf(stderr, "failed to get fb for bo: %d", framebuffer.fd);
       return false;
     }
 
     uint32_t handle = gbm_bo_get_handle(framebuffer.bo).u32;
     uint32_t stride = gbm_bo_get_stride(framebuffer.bo);
+    uint32_t format = gbm_bo_get_format(framebuffer.bo);
     uint32_t offset = 0;
-    drmModeAddFB2(drm_->GetFD(), width, height, GBM_FORMAT_XRGB8888, &handle,
-                  &stride, &offset, &framebuffer.fb_id, 0);
-    if (!framebuffer.fb_id) {
+    int addfb_ret = drmModeAddFB2(drm_->GetFD(), width, height, format, &handle,
+                                  &stride, &offset, &framebuffer.fb_id, 0);
+    if (addfb_ret != 0 || !framebuffer.fb_id) {
+      WWN_GBM_LOG("gbm-es2: drmModeAddFB2 failed (ret=%d fb_id=%u format=0x%x)",
+                  addfb_ret, framebuffer.fb_id, format);
       fprintf(stderr, "failed to create framebuffer from buffer object.\n");
       return false;
     }
@@ -458,7 +480,7 @@ class EGLDRMGlue::Impl : public DRMModesetter::Client {
                                       EGL_HEIGHT,
                                       height,
                                       EGL_LINUX_DRM_FOURCC_EXT,
-                                      GBM_FORMAT_XRGB8888,
+                                      static_cast<EGLint>(format),
                                       EGL_DMA_BUF_PLANE0_PITCH_EXT,
                                       static_cast<const int>(stride),
                                       EGL_DMA_BUF_PLANE0_OFFSET_EXT,
@@ -473,6 +495,8 @@ class EGLDRMGlue::Impl : public DRMModesetter::Client {
         egl_.CreateImageKHR(egl_.display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT,
                             nullptr /* no client buffer */, khr_image_attrs);
     if (framebuffer.image == EGL_NO_IMAGE_KHR) {
+      WWN_GBM_LOG("gbm-es2: eglCreateImageKHR dma_buf failed (%s)",
+                  EglGetError());
       fprintf(stderr, "failed to make image from buffer object: %s\n",
               EglGetError());
       return false;
@@ -489,6 +513,8 @@ class EGLDRMGlue::Impl : public DRMModesetter::Client {
                            framebuffer.gl_tex, 0);
 
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+      WWN_GBM_LOG("gbm-es2: FBO incomplete (0x%x)",
+                  glCheckFramebufferStatus(GL_FRAMEBUFFER));
       fprintf(stderr,
               "failed framebuffer check for created target buffer: %x\n",
               glCheckFramebufferStatus(GL_FRAMEBUFFER));
