@@ -7,6 +7,8 @@
  */
 #include <EGL/egl.h>
 #include <stdint.h>
+#if __has_include(<iland_drm_open_compat.h>)
 #include <iland_drm_open_compat.h>
+#endif
 
 #define eglGetDisplay(dev) (eglGetDisplay)((EGLNativeDisplayType)(uintptr_t)(dev))
