@@ -23,6 +23,7 @@ KGSL directly or introduces an EGL, Zink, or Venus translation chain.
 | `include/kmscube.h` | `kmscube_main` declaration for app linkers |
 | `libvkcube.a` | Native Vulkan renderer; `main` renamed to `vkcube_main` |
 | `include/vkcube.h` | `vkcube_main` declaration for app linkers |
+| `libgbm_es2_demo.a` | In-process archive; CLI `main` renamed (never LC_MAIN) |
 
 ## Nix registry
 
