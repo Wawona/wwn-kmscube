@@ -51,10 +51,16 @@ pkgs.stdenv.mkDerivation {
       demo/gbm_es2_demo.cpp demo/dma_buf_mmap_demo.cpp demo/main.cpp"
 
     echo "CXX libgbm_es2_demo.a (in-process gbm_es2_demo_main)"
+    # Never export C main into the archive. A linked _main steals LC_MAIN from
+    # Swift @main on iOS/tvOS/visionOS and the host app dies in the cube demo.
     OBJS=""
     for src in $SOURCES; do
       obj="$(basename "$src" .cpp).o"
-"$CLANGXX" -c $CXXFLAGS "$src" -o "$obj"
+      EXTRA=""
+      case "$src" in
+        demo/main.cpp) EXTRA="-Dmain=gbm_es2_demo_cli_main" ;;
+      esac
+      "$CLANGXX" -c $CXXFLAGS $EXTRA "$src" -o "$obj"
       OBJS="$OBJS $obj"
     done
     "$AR" rcs libgbm_es2_demo.a $OBJS

@@ -119,6 +119,8 @@ extern "C" int gbm_es2_demo_main(int argc, char* argv[]) {
   return 0;
 }
 
+/* Standalone CLI entry. In-process archives rename this via -Dmain=… so the
+ * host Swift/JNI @main keeps LC_MAIN (see apple-mobile.nix / android.nix). */
 int main(int argc, char* argv[]) {
   return gbm_es2_demo_main(argc, argv);
 }

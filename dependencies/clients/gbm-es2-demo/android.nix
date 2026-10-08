@@ -42,10 +42,15 @@ pkgs.stdenv.mkDerivation {
       demo/gbm_es2_demo.cpp demo/dma_buf_mmap_demo.cpp demo/main.cpp"
 
     echo "CXX libgbm_es2_demo.a (in-process gbm_es2_demo_main)"
+    # Never export C main into the archive (same LC_MAIN steal as Apple mobile).
     OBJS=""
     for src in $SOURCES; do
       obj="$(basename "$src" .cpp).o"
-"$CXX" -c $CXXFLAGS "$src" -o "$obj"
+      EXTRA=""
+      case "$src" in
+        demo/main.cpp) EXTRA="-Dmain=gbm_es2_demo_cli_main" ;;
+      esac
+      "$CXX" -c $CXXFLAGS $EXTRA "$src" -o "$obj"
       OBJS="$OBJS $obj"
     done
     "$AR" rcs libgbm_es2_demo.a $OBJS
