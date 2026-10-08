@@ -76,7 +76,9 @@ pkgs.stdenv.mkDerivation {
       obj="$(basename "$src" .cpp).o"
       EXTRA=""
       case "$src" in
-        demo/main.cpp) EXTRA="-Dmain=gbm_es2_demo_main" ;;
+        # Product ABI is the existing extern "C" gbm_es2_demo_main(). Rename
+        # the C++ main() only so the archive never exports _main.
+        demo/main.cpp) EXTRA="-Dmain=gbm_es2_demo_cli_main" ;;
       esac
       $CLANGXX -c $CXXFLAGS $EXTRA "$src" -o "$obj"
       OBJS="$OBJS $obj"
