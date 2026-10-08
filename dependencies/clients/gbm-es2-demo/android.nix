@@ -48,7 +48,7 @@ pkgs.stdenv.mkDerivation {
       obj="$(basename "$src" .cpp).o"
       EXTRA=""
       case "$src" in
-        demo/main.cpp) EXTRA="-Dmain=gbm_es2_demo_cli_main" ;;
+        demo/main.cpp) EXTRA="-Dmain=gbm_es2_demo_main" ;;
       esac
       "$CXX" -c $CXXFLAGS $EXTRA "$src" -o "$obj"
       OBJS="$OBJS $obj"
